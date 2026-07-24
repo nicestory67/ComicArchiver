@@ -94,14 +94,6 @@ namespace ComicArchiver.Services
     /// </summary>
     public class ArchiverService
     {
-        /// <summary>
-        ///受保护的系统/开发文件夹集合（忽略大小写）。
-        /// 避免在打包或删除清理时意外损坏项目关键目录。
-        /// </summary>
-        private static readonly HashSet<string> ProtectedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "bin", "obj", ".vs", ".git", ".agents", "services", "lzma2602", "properties"
-        };
 
         /// <summary>
         /// 异步执行漫画归档打包流程。
@@ -115,6 +107,176 @@ namespace ComicArchiver.Services
             CancellationToken cancellationToken = default)
         {
             await Task.Run(() => Process(options, progress, cancellationToken), cancellationToken);
+        }
+
+        /// <summary>
+        /// 异步执行漫画归档解压流程。
+        /// </summary>
+        /// <param name="options">归档配置选项</param>
+        /// <param name="progress">进度与日志回调接口</param>
+        /// <param name="cancellationToken">取消操作令牌</param>
+        public async Task ExtractAsync(
+            ArchiverOptions options,
+            IProgress<ArchiveProgressReport> progress = null,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Run(() => Extract(options, progress, cancellationToken), cancellationToken);
+        }
+
+        /// <summary>
+        /// 同步执行漫画归档解压流程。
+        /// 根据 Options 的配置扫描待解压的 CBZ/ZIP 归档、解压至同名文件夹并可选清理原压缩包。
+        /// </summary>
+        /// <param name="options">归档配置选项</param>
+        /// <param name="progress">进度与日志回调接口</param>
+        /// <param name="cancellationToken">取消操作令牌</param>
+        public void Extract(
+            ArchiverOptions options,
+            IProgress<ArchiveProgressReport> progress = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (options.TargetPaths == null || options.TargetPaths.Count == 0)
+            {
+                Report(progress, "错误: 未选择任何目标目录。", LogLevel.Error);
+                return;
+            }
+
+            List<string> archivesToExtract = new List<string>();
+
+            // 根据模式搜寻待解压的压缩包文件
+            foreach (var path in options.TargetPaths)
+            {
+                if (Directory.Exists(path))
+                {
+                    SearchOption searchOption = options.Mode == BatchMode.Batch
+                        ? SearchOption.AllDirectories
+                        : SearchOption.TopDirectoryOnly;
+
+                    var files = Directory.GetFiles(path, "*.*", searchOption)
+                        .Where(f => f.EndsWith(".cbz", StringComparison.OrdinalIgnoreCase) ||
+                                    f.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                        .ToArray();
+
+                    archivesToExtract.AddRange(files);
+                }
+                else if (File.Exists(path))
+                {
+                    if (path.EndsWith(".cbz", StringComparison.OrdinalIgnoreCase) ||
+                        path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                    {
+                        archivesToExtract.Add(path);
+                    }
+                }
+            }
+
+            archivesToExtract = archivesToExtract.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+            int total = archivesToExtract.Count;
+            if (total == 0)
+            {
+                Report(progress, "提示: 未找到需要解压的 CBZ/ZIP 压缩包。", LogLevel.Warning);
+                return;
+            }
+
+            Report(progress, $"开始批量解压处理，共 {total} 个压缩包文件", LogLevel.Info);
+
+            int processedCount = 0;
+
+            foreach (var archivePath in archivesToExtract)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string archiveName = Path.GetFileName(archivePath);
+                string archiveNameWithoutExt = Path.GetFileNameWithoutExtension(archivePath);
+                string parentDir = Path.GetDirectoryName(archivePath);
+                string targetFolder = Path.Combine(parentDir, archiveNameWithoutExt);
+
+                Report(progress, $"[{processedCount + 1}/{total}] 正在解压: \"{archiveName}\"...", LogLevel.Info, processedCount, total, archiveName);
+
+                bool extractSuccess = false;
+                try
+                {
+                    ExtractArchiveToDirectory(archivePath, targetFolder, cancellationToken);
+                    extractSuccess = true;
+                    Report(progress, $"  ✓ 已解压至文件夹: \"{archiveNameWithoutExt}\"", LogLevel.Success, processedCount + 1, total, archiveName);
+                }
+                catch (Exception ex)
+                {
+                    Report(progress, $"  ✗ 解压失败 \"{archiveName}\": {ex.Message}", LogLevel.Error, processedCount, total, archiveName);
+                }
+
+                // 解压成功且开启了“清理原文件”选项时删除原压缩包
+                if (extractSuccess && options.DeleteOriginalFolder)
+                {
+                    try
+                    {
+                        File.Delete(archivePath);
+                        Report(progress, $"  ✓ 已清理原压缩包: \"{archiveName}\"", LogLevel.Info, processedCount + 1, total, archiveName);
+                    }
+                    catch (Exception ex)
+                    {
+                        Report(progress, $"  ⚠ 删除原压缩包失败 \"{archiveName}\": {ex.Message}", LogLevel.Warning, processedCount + 1, total, archiveName);
+                    }
+                }
+
+                processedCount++;
+            }
+
+            Report(progress, $"批量解压完成！共成功处理 {processedCount}/{total} 个压缩包。", LogLevel.Success, processedCount, total);
+        }
+
+        /// <summary>
+        /// 将指定的 ZIP / CBZ 压缩包解压至目标文件夹。
+        /// 兼容多层级目录结构与文件覆盖。
+        /// </summary>
+        /// <param name="archivePath">压缩包路径</param>
+        /// <param name="destinationDir">目标输出目录</param>
+        /// <param name="cancellationToken">取消令牌</param>
+        private void ExtractArchiveToDirectory(
+            string archivePath,
+            string destinationDir,
+            CancellationToken cancellationToken)
+        {
+            Directory.CreateDirectory(destinationDir);
+            string fullDestDir = Path.GetFullPath(destinationDir);
+            if (!fullDestDir.EndsWith(Path.DirectorySeparatorChar.ToString()))
+            {
+                fullDestDir += Path.DirectorySeparatorChar;
+            }
+
+            using (var zipStream = File.OpenRead(archivePath))
+            using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read, false))
+            {
+                foreach (var entry in archive.Entries)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // 处理空文件夹条目
+                    if (string.IsNullOrEmpty(entry.Name) || entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\"))
+                    {
+                        string dirPath = Path.GetFullPath(Path.Combine(destinationDir, entry.FullName));
+                        if (dirPath.StartsWith(fullDestDir, StringComparison.OrdinalIgnoreCase))
+                        {
+                            Directory.CreateDirectory(dirPath);
+                        }
+                        continue;
+                    }
+
+                    string destFilePath = Path.GetFullPath(Path.Combine(destinationDir, entry.FullName));
+                    if (!destFilePath.StartsWith(fullDestDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new IOException($"解压目标路径存在安全风险 (Zip Slip): {entry.FullName}");
+                    }
+
+                    string parentFolder = Path.GetDirectoryName(destFilePath);
+                    if (!string.IsNullOrEmpty(parentFolder))
+                    {
+                        Directory.CreateDirectory(parentFolder);
+                    }
+
+                    entry.ExtractToFile(destFilePath, overwrite: true);
+                }
+            }
         }
 
         /// <summary>
@@ -160,9 +322,7 @@ namespace ComicArchiver.Services
                 {
                     if (Directory.Exists(path))
                     {
-                        var subDirs = Directory.GetDirectories(path)
-                            .Where(d => !ProtectedFolders.Contains(Path.GetFileName(d)))
-                            .ToArray();
+                        var subDirs = Directory.GetDirectories(path);
                         foldersToProcess.AddRange(subDirs);
                     }
                 }
@@ -173,12 +333,10 @@ namespace ComicArchiver.Services
                 {
                     if (Directory.Exists(path))
                     {
-                        var level1Dirs = Directory.GetDirectories(path)
-                            .Where(d => !ProtectedFolders.Contains(Path.GetFileName(d)));
+                        var level1Dirs = Directory.GetDirectories(path);
                         foreach (var dir1 in level1Dirs)
                         {
-                            var level2Dirs = Directory.GetDirectories(dir1)
-                                .Where(d => !ProtectedFolders.Contains(Path.GetFileName(d)));
+                            var level2Dirs = Directory.GetDirectories(dir1);
                             foldersToProcess.AddRange(level2Dirs);
                         }
                     }

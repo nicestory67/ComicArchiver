@@ -28,13 +28,16 @@ namespace ComicArchiver
         private List<string> _selectedPaths = new List<string>();
 
         /// <summary>
-        /// 初始化 MainWindow 窗口实例，并默认设置当前运行目录为目标路径。
+        /// 初始化 MainWindow 窗口实例。
         /// </summary>
         public MainWindow()
         {
             InitializeComponent();
             _archiverService = new ArchiverService();
-            SetTargetPath(Environment.CurrentDirectory);
+            SetTargetPath();
+
+            // 默认设置为 HandyControl 暗色主题
+            HandyControl.Themes.Theme.SetSkin(this, HandyControl.Data.SkinType.Dark);
         }
 
         /// <summary>
@@ -54,11 +57,19 @@ namespace ComicArchiver
                     }
                     else if (File.Exists(p))
                     {
-                        // 若拖入/选择了文件，则提取其所在的父目录
-                        string dir = Path.GetDirectoryName(p);
-                        if (!string.IsNullOrEmpty(dir) && !_selectedPaths.Contains(dir))
+                        string ext = Path.GetExtension(p)?.ToLowerInvariant();
+                        if ((ext == ".cbz" || ext == ".zip") && !_selectedPaths.Contains(p))
                         {
-                            _selectedPaths.Add(dir);
+                            _selectedPaths.Add(p);
+                        }
+                        else
+                        {
+                            // 若拖入/选择了普通文件，则提取其所在的父目录
+                            string dir = Path.GetDirectoryName(p);
+                            if (!string.IsNullOrEmpty(dir) && !_selectedPaths.Contains(dir))
+                            {
+                                _selectedPaths.Add(dir);
+                            }
                         }
                     }
                 }
@@ -67,21 +78,21 @@ namespace ComicArchiver
             if (_selectedPaths.Count == 0)
             {
                 TxtTargetDir.Text = string.Empty;
-                TxtDragHint.Text = "💡 提示：请拖入文件夹或点击 [浏览...] 选择";
+                TxtDragHint.Text = "提示：请拖入文件夹或点击 [浏览...] 选择";
             }
             else if (_selectedPaths.Count == 1)
             {
                 TxtTargetDir.Text = _selectedPaths[0];
                 TxtDragHint.Text = RbModeSubFolders.IsChecked == true
-                    ? "💡 子目录模式：将压缩该目录下的每一个子文件夹"
-                    : "💡 批量模式：将压缩该目录下所有目录的子文件夹";
+                    ? "子目录模式：将压缩该目录下的每一个子文件夹"
+                    : "批量模式：将压缩该目录下所有目录的子文件夹";
             }
             else
             {
                 TxtTargetDir.Text = $"[已选择多项] 已选择 {_selectedPaths.Count} 个文件夹";
                 TxtDragHint.Text = RbModeSubFolders.IsChecked == true
-                    ? $"💡 子目录模式：将分别压缩选中的 {_selectedPaths.Count} 个目录下的每一个子文件夹"
-                    : $"💡 批量模式：将压缩选中的 {_selectedPaths.Count} 个目录下所有目录的子文件夹";
+                    ? $"子目录模式：将分别压缩选中的 {_selectedPaths.Count} 个目录下的每一个子文件夹"
+                    : $"批量模式：将压缩选中的 {_selectedPaths.Count} 个目录下所有目录的子文件夹";
             }
         }
 
@@ -94,14 +105,14 @@ namespace ComicArchiver
             if (_selectedPaths.Count > 1)
             {
                 TxtDragHint.Text = RbModeSubFolders.IsChecked == true
-                    ? $"💡 子目录模式：将分别压缩选中的 {_selectedPaths.Count} 个目录下的每一个子文件夹"
-                    : $"💡 批量模式：将压缩选中的 {_selectedPaths.Count} 个目录下所有目录的子文件夹";
+                    ? $"子目录模式：将分别压缩选中的 {_selectedPaths.Count} 个目录下的每一个子文件夹"
+                    : $"批量模式：将压缩选中的 {_selectedPaths.Count} 个目录下所有目录的子文件夹";
             }
             else
             {
                 TxtDragHint.Text = RbModeSubFolders.IsChecked == true
-                    ? "💡 子目录模式：将压缩选定目录下的每一个子文件夹"
-                    : "💡 批量模式：将压缩选定目录下所有目录的子文件夹";
+                    ? "子目录模式：将压缩选定目录下的每一个子文件夹"
+                    : "批量模式：将压缩选定目录下所有目录的子文件夹";
             }
         }
 
@@ -123,6 +134,81 @@ namespace ComicArchiver
                 {
                     SetTargetPath(dialog.SelectedPath);
                 }
+            }
+        }
+
+        /// <summary>
+        /// 点击 [开始解压] 按钮事件，组装解压配置并开启后台异步解压任务。
+        /// </summary>
+        private async void BtnExtract_Click(object sender, RoutedEventArgs e)
+        {
+            // 校验手动在文本框中输入的路径
+            if (_selectedPaths.Count <= 1)
+            {
+                string manualText = TxtTargetDir.Text?.Trim();
+                if (!string.IsNullOrEmpty(manualText) && (Directory.Exists(manualText) || File.Exists(manualText)))
+                {
+                    _selectedPaths = new List<string> { manualText };
+                }
+            }
+
+            if (_selectedPaths.Count == 0)
+            {
+                HandyControl.Controls.MessageBox.Show("请选择有效的目标文件夹或压缩包！", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // 构造解压参数实例
+            var options = new ArchiverOptions
+            {
+                TargetPaths = new List<string>(_selectedPaths),
+                Mode = RbModeSubFolders.IsChecked == true ? BatchMode.SubFolders : BatchMode.Batch,
+                ArchiveType = RbCbz.IsChecked == true ? "cbz" : "zip",
+                DeleteOriginalFolder = ChkDeleteOriginal.IsChecked == true,
+                ExcludePattern = TxtExclude.Text?.Trim()
+            };
+
+            SetUiRunningState(true);
+            _cts = new CancellationTokenSource();
+
+            // 进度汇报与 UI 刷新句柄
+            var progress = new Progress<ArchiveProgressReport>(report =>
+            {
+                if (!string.IsNullOrEmpty(report.Message))
+                {
+                    AddLog(report.Message, report.Level);
+                }
+
+                if (report.TotalFolders > 0)
+                {
+                    ProgBar.Value = report.Percentage;
+                    TxtPercentage.Text = $"{report.Percentage:F0}%";
+                    TxtStatus.Text = $"解压中 ({report.ProcessedFolders}/{report.TotalFolders}): {report.CurrentFolder}";
+                }
+            });
+
+            try
+            {
+                AddLog($"📦 开始批量解压任务...", LogLevel.Info);
+                await _archiverService.ExtractAsync(options, progress, _cts.Token);
+                ProgBar.Value = 100;
+                TxtPercentage.Text = "100%";
+                TxtStatus.Text = "解压完成！";
+                TxtSummary.Text = "所有压缩包解压完成。";
+            }
+            catch (OperationCanceledException)
+            {
+                AddLog("⚠ 用户已取消操作。", LogLevel.Warning);
+                TxtStatus.Text = "已取消";
+            }
+            catch (Exception ex)
+            {
+                AddLog($"❌ 解压出错: {ex.Message}", LogLevel.Error);
+                TxtStatus.Text = "解压失败";
+            }
+            finally
+            {
+                SetUiRunningState(false);
             }
         }
 
@@ -270,6 +356,7 @@ namespace ComicArchiver
         private void SetUiRunningState(bool isRunning)
         {
             BtnStart.IsEnabled = !isRunning;
+            BtnExtract.IsEnabled = !isRunning;
             BtnCancel.IsEnabled = isRunning;
             BtnBrowse.IsEnabled = !isRunning;
             TxtTargetDir.IsEnabled = !isRunning;
@@ -320,6 +407,50 @@ namespace ComicArchiver
 
             LstLogs.Items.Add(item);
             LstLogs.ScrollIntoView(item);
+        }
+
+        /// <summary>
+        /// 点击 [ToggleThemeCommand] 按钮事件，切换 HandyControl 的 SkinDefault（明亮）与 SkinDark（暗黑）主题。
+        /// </summary>
+        private void ToggleThemeCommand_Click(object sender, RoutedEventArgs e)
+        {
+            bool isDark = ToggleThemeCommand.IsChecked == true;
+            var skinType = isDark ? HandyControl.Data.SkinType.Dark : HandyControl.Data.SkinType.Default;
+
+            // 1. 使用 HandyControl API 设置当前窗口主题
+            HandyControl.Themes.Theme.SetSkin(this, skinType);
+
+            // 2. 动态递归替换全局资源字典中的皮肤 (SkinDefault.xaml <-> SkinDark.xaml)
+            var newSkinUri = new Uri(isDark
+                ? "pack://application:,,,/HandyControl;component/Themes/SkinDark.xaml"
+                : "pack://application:,,,/HandyControl;component/Themes/SkinDefault.xaml");
+
+            ReplaceSkinInDictionary(Application.Current.Resources, newSkinUri);
+        }
+
+        /// <summary>
+        /// 递归查找并替换 ResourceDictionary 中的 HandyControl 皮肤字典 (SkinDefault / SkinDark)。
+        /// </summary>
+        private void ReplaceSkinInDictionary(ResourceDictionary dict, Uri newSkinUri)
+        {
+            if (dict == null) return;
+
+            var skinToReplace = dict.MergedDictionaries.FirstOrDefault(d =>
+                d.Source != null && (d.Source.OriginalString.Contains("SkinDefault.xaml") || d.Source.OriginalString.Contains("SkinDark.xaml")));
+
+            if (skinToReplace != null)
+            {
+                int index = dict.MergedDictionaries.IndexOf(skinToReplace);
+                dict.MergedDictionaries.RemoveAt(index);
+                dict.MergedDictionaries.Insert(index, new ResourceDictionary { Source = newSkinUri });
+            }
+            else
+            {
+                foreach (var childDict in dict.MergedDictionaries)
+                {
+                    ReplaceSkinInDictionary(childDict, newSkinUri);
+                }
+            }
         }
     }
 }
