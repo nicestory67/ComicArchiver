@@ -10,53 +10,105 @@ using SevenZip;
 
 namespace ComicArchiver.Services
 {
+    /// <summary>
+    /// 日志级别枚举。
+    /// 用于区分进度报告与界面日志记录的消息类型。
+    /// </summary>
     public enum LogLevel
     {
+        /// <summary> 普通信息 </summary>
         Info,
+        /// <summary> 成功完成 </summary>
         Success,
+        /// <summary> 警告消息 </summary>
         Warning,
+        /// <summary> 错误消息 </summary>
         Error
     }
 
+    /// <summary>
+    /// 归档打包进度报告类。
+    /// 包含当前处理的文件夹名称、全局进度百分比、日志消息及级别。
+    /// </summary>
     public class ArchiveProgressReport
     {
+        /// <summary> 日志消息文本 </summary>
         public string Message { get; set; }
+
+        /// <summary> 消息日志级别 </summary>
         public LogLevel Level { get; set; } = LogLevel.Info;
+
+        /// <summary> 已处理完成的文件夹数量 </summary>
         public int ProcessedFolders { get; set; }
+
+        /// <summary> 需要处理的总文件夹数量 </summary>
         public int TotalFolders { get; set; }
+
+        /// <summary> 当前总体完成百分比 (0 - 100) </summary>
         public double Percentage => TotalFolders > 0 ? (double)ProcessedFolders / TotalFolders * 100 : 0;
+
+        /// <summary> 当前正在处理的文件夹名称 </summary>
         public string CurrentFolder { get; set; }
     }
 
+    /// <summary>
+    /// 批量处理模式枚举。
+    /// </summary>
     public enum BatchMode
     {
         /// <summary>
-        /// 将指定目录下的各个子文件夹分别压缩为 cbz/zip (与原 bat 逻辑一致)
+        /// 子文件夹模式：对选定目标目录下的各个子文件夹分别打包压缩为 cbz/zip。
         /// </summary>
         SubFolders,
 
         /// <summary>
-        /// 直接将选定的每个文件夹自身压缩为对应后缀 (适合多选拖入或批量多文件夹)
+        /// 批量模式：压缩输入目录下的所有目录的子目录。
         /// </summary>
-        DirectFolders
+        Batch
     }
 
+    /// <summary>
+    /// 归档处理配置参数类。
+    /// </summary>
     public class ArchiverOptions
     {
+        /// <summary> 目标路径列表（可包含一个或多个文件夹路径） </summary>
         public List<string> TargetPaths { get; set; } = new List<string>();
+
+        /// <summary> 批量打包模式（默认：子文件夹模式） </summary>
         public BatchMode Mode { get; set; } = BatchMode.SubFolders;
+
+        /// <summary> 目标压缩扩展名格式（支持 cbz 或 zip，默认: cbz） </summary>
         public string ArchiveType { get; set; } = "cbz";
+
+        /// <summary> 压缩成功后是否删除原始文件夹（默认: true） </summary>
         public bool DeleteOriginalFolder { get; set; } = true;
+
+        /// <summary> 排除文件的通配符过滤规则（多个格式可用 ';' 或 ',' 分隔，默认: *.db） </summary>
         public string ExcludePattern { get; set; } = "*.db";
     }
 
+    /// <summary>
+    /// 漫画文件夹打包与归档核心服务类。
+    /// 提供文件夹检索、Zip/CBZ 结构生成、SevenZip CRC32 计算以及源文件夹清理等功能。
+    /// </summary>
     public class ArchiverService
     {
+        /// <summary>
+        ///受保护的系统/开发文件夹集合（忽略大小写）。
+        /// 避免在打包或删除清理时意外损坏项目关键目录。
+        /// </summary>
         private static readonly HashSet<string> ProtectedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "bin", "obj", ".vs", ".git", ".agents", "services", "lzma2602", "properties"
         };
 
+        /// <summary>
+        /// 异步执行漫画归档打包流程。
+        /// </summary>
+        /// <param name="options">归档配置选项</param>
+        /// <param name="progress">进度与日志回调接口</param>
+        /// <param name="cancellationToken">取消操作令牌</param>
         public async Task ProcessAsync(
             ArchiverOptions options,
             IProgress<ArchiveProgressReport> progress = null,
@@ -65,17 +117,26 @@ namespace ComicArchiver.Services
             await Task.Run(() => Process(options, progress, cancellationToken), cancellationToken);
         }
 
+        /// <summary>
+        /// 同步执行漫画归档打包流程。
+        /// 根据 Options 的配置扫描待处理文件夹、创建 Zip 归档并可选清理原始文件夹。
+        /// </summary>
+        /// <param name="options">归档配置选项</param>
+        /// <param name="progress">进度与日志回调接口</param>
+        /// <param name="cancellationToken">取消操作令牌</param>
         public void Process(
             ArchiverOptions options,
             IProgress<ArchiveProgressReport> progress = null,
             CancellationToken cancellationToken = default)
         {
+            // 校验目标路径
             if (options.TargetPaths == null || options.TargetPaths.Count == 0)
             {
                 Report(progress, "错误: 未选择任何目标目录。", LogLevel.Error);
                 return;
             }
 
+            // 校验格式扩展名
             string ext = options.ArchiveType.TrimStart('.').ToLowerInvariant();
             if (ext != "cbz" && ext != "zip")
             {
@@ -83,6 +144,7 @@ namespace ComicArchiver.Services
                 return;
             }
 
+            // 解析排除文件的通配符规则
             string[] excludePatterns = string.IsNullOrWhiteSpace(options.ExcludePattern)
                 ? new[] { "*.db" }
                 : options.ExcludePattern.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
@@ -91,6 +153,7 @@ namespace ComicArchiver.Services
 
             List<string> foldersToProcess = new List<string>();
 
+            // 根据批量模式搜寻待打包的文件夹
             if (options.Mode == BatchMode.SubFolders)
             {
                 foreach (var path in options.TargetPaths)
@@ -104,13 +167,20 @@ namespace ComicArchiver.Services
                     }
                 }
             }
-            else
+            else if (options.Mode == BatchMode.Batch)
             {
                 foreach (var path in options.TargetPaths)
                 {
-                    if (Directory.Exists(path) && !ProtectedFolders.Contains(Path.GetFileName(path)))
+                    if (Directory.Exists(path))
                     {
-                        foldersToProcess.Add(path);
+                        var level1Dirs = Directory.GetDirectories(path)
+                            .Where(d => !ProtectedFolders.Contains(Path.GetFileName(d)));
+                        foreach (var dir1 in level1Dirs)
+                        {
+                            var level2Dirs = Directory.GetDirectories(dir1)
+                                .Where(d => !ProtectedFolders.Contains(Path.GetFileName(d)));
+                            foldersToProcess.AddRange(level2Dirs);
+                        }
                     }
                 }
             }
@@ -126,6 +196,7 @@ namespace ComicArchiver.Services
 
             int processedCount = 0;
 
+            // 循环依次压缩处理每个文件夹
             foreach (var folderPath in foldersToProcess)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -139,11 +210,13 @@ namespace ComicArchiver.Services
                 bool archiveSuccess = false;
                 try
                 {
+                    // 若目标压缩包文件已存在则先删除
                     if (File.Exists(zipPath))
                     {
                         File.Delete(zipPath);
                     }
 
+                    // 创建 Zip/CBZ 文件结构
                     CreateZipFromDirectory(folderPath, zipPath, excludePatterns, cancellationToken);
                     archiveSuccess = true;
                     Report(progress, $"  ✓ 已生成: \"{folderName}.{ext}\"", LogLevel.Success, processedCount + 1, total, folderName);
@@ -153,6 +226,7 @@ namespace ComicArchiver.Services
                     Report(progress, $"  ✗ 压缩失败 \"{folderName}\": {ex.Message}", LogLevel.Error, processedCount, total, folderName);
                 }
 
+                // 压缩成功且开启了“删除原始文件夹”选项时清理源文件夹
                 if (archiveSuccess && options.DeleteOriginalFolder)
                 {
                     try
@@ -173,6 +247,14 @@ namespace ComicArchiver.Services
             Report(progress, $"批量打包完成！共成功处理 {processedCount}/{total} 个文件夹。", LogLevel.Success, processedCount, total);
         }
 
+        /// <summary>
+        /// 从源文件夹遍历文件并生成 Zip/CBZ 归档压缩包。
+        /// 过滤符合排除通配符的文件，并调用 SevenZip 计算 CRC32 值。
+        /// </summary>
+        /// <param name="sourceDir">源文件夹路径</param>
+        /// <param name="destinationZipPath">生成的 Zip/CBZ 文件目标路径</param>
+        /// <param name="excludePatterns">排除通配符数组</param>
+        /// <param name="cancellationToken">取消操作令牌</param>
         private void CreateZipFromDirectory(
             string sourceDir,
             string destinationZipPath,
@@ -196,9 +278,10 @@ namespace ComicArchiver.Services
                         continue;
                     }
 
+                    // 计算在压缩包内的相对路径（统一使用 Unix 风格斜杠 '/'）
                     string relativePath = file.Substring(sourceDirLen).Replace('\\', '/');
 
-                    // Calculate CRC32 using 7z LZMA SDK
+                    // 利用 7z LZMA SDK 计算文件的 CRC32 校验码
                     uint crc = CalculateFileCrc32(file);
 
                     var entry = archive.CreateEntry(relativePath, CompressionLevel.Optimal);
@@ -211,6 +294,11 @@ namespace ComicArchiver.Services
             }
         }
 
+        /// <summary>
+        /// 使用 7-Zip (LZMA SDK) 的 CRC 类计算文件的 CRC32 校验和。
+        /// </summary>
+        /// <param name="file">需要计算 CRC32 的文件路径</param>
+        /// <returns>CRC32 无符号 32 位整数；若读取发生异常返回 0</returns>
         private uint CalculateFileCrc32(string file)
         {
             try
@@ -234,6 +322,11 @@ namespace ComicArchiver.Services
             }
         }
 
+        /// <summary>
+        /// 在删除原始文件夹之前清理匹配排除规则的文件（如清除 .db 等系统缩略图文件）。
+        /// </summary>
+        /// <param name="dir">要清理的目标文件夹</param>
+        /// <param name="patterns">通配符规则数组</param>
         private void CleanFiles(string dir, string[] patterns)
         {
             try
@@ -250,6 +343,12 @@ namespace ComicArchiver.Services
             catch { }
         }
 
+        /// <summary>
+        /// 检查文件名是否与通配符规则匹配（例如将 "*.db" 转换为正则表达式匹配）。
+        /// </summary>
+        /// <param name="fileName">待校验的文件名</param>
+        /// <param name="patterns">通配符模式数组</param>
+        /// <returns>如果匹配（应排除）返回 true，否则返回 false</returns>
         private bool IsExcluded(string fileName, string[] patterns)
         {
             foreach (var pattern in patterns)
@@ -263,6 +362,9 @@ namespace ComicArchiver.Services
             return false;
         }
 
+        /// <summary>
+        /// 辅助方法：向 IProgress 发送进度和日志状态更新。
+        /// </summary>
         private void Report(
             IProgress<ArchiveProgressReport> progress,
             string message,
@@ -282,3 +384,4 @@ namespace ComicArchiver.Services
         }
     }
 }
+

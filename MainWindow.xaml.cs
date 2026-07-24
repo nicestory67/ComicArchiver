@@ -12,20 +12,35 @@ using HandyControl.Controls;
 
 namespace ComicArchiver
 {
+    /// <summary>
+    /// MainWindow.xaml 的交互逻辑。
+    /// WPF 核心 UI 主窗口，负责展示处理进度、控制按钮、批量拖拽响应以及日志交互。
+    /// </summary>
     public partial class MainWindow : HandyControl.Controls.Window
     {
+        /// <summary> 用于支持异步打包任务的中途取消 CancellationTokenSource 实例 </summary>
         private CancellationTokenSource _cts;
+
+        /// <summary> 漫画归档打包核心服务对象 </summary>
         private readonly ArchiverService _archiverService;
+
+        /// <summary> 当前选中的目标文件夹路径列表 </summary>
         private List<string> _selectedPaths = new List<string>();
 
+        /// <summary>
+        /// 初始化 MainWindow 窗口实例，并默认设置当前运行目录为目标路径。
+        /// </summary>
         public MainWindow()
         {
             InitializeComponent();
             _archiverService = new ArchiverService();
             SetTargetPath(Environment.CurrentDirectory);
-            AddLog("ComicArchiver 已完成纯动态资源主题替换。", LogLevel.Info);
         }
 
+        /// <summary>
+        /// 设置并刷新当前目标路径列表，同时动态更新 UI 的提示信息文本与压缩模式单选框状态。
+        /// </summary>
+        /// <param name="paths">一个或多个目标文件/文件夹路径</param>
         private void SetTargetPath(params string[] paths)
         {
             _selectedPaths.Clear();
@@ -39,6 +54,7 @@ namespace ComicArchiver
                     }
                     else if (File.Exists(p))
                     {
+                        // 若拖入/选择了文件，则提取其所在的父目录
                         string dir = Path.GetDirectoryName(p);
                         if (!string.IsNullOrEmpty(dir) && !_selectedPaths.Contains(dir))
                         {
@@ -58,31 +74,40 @@ namespace ComicArchiver
                 TxtTargetDir.Text = _selectedPaths[0];
                 TxtDragHint.Text = RbModeSubFolders.IsChecked == true
                     ? "💡 子目录模式：将压缩该目录下的每一个子文件夹"
-                    : "💡 直压模式：将直接压缩该文件夹本身";
+                    : "💡 批量模式：将压缩该目录下所有目录的子文件夹";
             }
             else
             {
-                TxtTargetDir.Text = $"[批量模式] 已选择 {_selectedPaths.Count} 个文件夹";
-                TxtDragHint.Text = $"💡 批量直压模式：将对选中的 {_selectedPaths.Count} 个文件夹分别打包";
-                RbModeDirect.IsChecked = true;
+                TxtTargetDir.Text = $"[已选择多项] 已选择 {_selectedPaths.Count} 个文件夹";
+                TxtDragHint.Text = RbModeSubFolders.IsChecked == true
+                    ? $"💡 子目录模式：将分别压缩选中的 {_selectedPaths.Count} 个目录下的每一个子文件夹"
+                    : $"💡 批量模式：将压缩选中的 {_selectedPaths.Count} 个目录下所有目录的子文件夹";
             }
         }
 
+        /// <summary>
+        /// 打包模式单选框变更事件响应函数，用于即时更新提示说明。
+        /// </summary>
         private void Mode_Changed(object sender, RoutedEventArgs e)
         {
             if (TxtDragHint == null) return;
             if (_selectedPaths.Count > 1)
             {
-                TxtDragHint.Text = $"💡 批量直压模式：将对选中的 {_selectedPaths.Count} 个文件夹分别打包";
+                TxtDragHint.Text = RbModeSubFolders.IsChecked == true
+                    ? $"💡 子目录模式：将分别压缩选中的 {_selectedPaths.Count} 个目录下的每一个子文件夹"
+                    : $"💡 批量模式：将压缩选中的 {_selectedPaths.Count} 个目录下所有目录的子文件夹";
             }
             else
             {
                 TxtDragHint.Text = RbModeSubFolders.IsChecked == true
                     ? "💡 子目录模式：将压缩选定目录下的每一个子文件夹"
-                    : "💡 文件夹直压模式：将直接压缩选定的文件夹本身";
+                    : "💡 批量模式：将压缩选定目录下所有目录的子文件夹";
             }
         }
 
+        /// <summary>
+        /// 点击 [浏览...] 按钮事件，使用 Windows Forms 的 FolderBrowserDialog 选取目标目录。
+        /// </summary>
         private void BtnBrowse_Click(object sender, RoutedEventArgs e)
         {
             using (var dialog = new System.Windows.Forms.FolderBrowserDialog())
@@ -101,8 +126,12 @@ namespace ComicArchiver
             }
         }
 
+        /// <summary>
+        /// 点击 [开始打包] 按钮事件，组装打包配置并开启后台异步任务。
+        /// </summary>
         private async void BtnStart_Click(object sender, RoutedEventArgs e)
         {
+            // 校验手动在文本框中输入的路径
             if (_selectedPaths.Count <= 1)
             {
                 string manualText = TxtTargetDir.Text?.Trim();
@@ -118,10 +147,11 @@ namespace ComicArchiver
                 return;
             }
 
+            // 构造打包参数实例
             var options = new ArchiverOptions
             {
                 TargetPaths = new List<string>(_selectedPaths),
-                Mode = RbModeSubFolders.IsChecked == true ? BatchMode.SubFolders : BatchMode.DirectFolders,
+                Mode = RbModeSubFolders.IsChecked == true ? BatchMode.SubFolders : BatchMode.Batch,
                 ArchiveType = RbCbz.IsChecked == true ? "cbz" : "zip",
                 DeleteOriginalFolder = ChkDeleteOriginal.IsChecked == true,
                 ExcludePattern = TxtExclude.Text?.Trim()
@@ -130,6 +160,7 @@ namespace ComicArchiver
             SetUiRunningState(true);
             _cts = new CancellationTokenSource();
 
+            // 进度汇报与 UI 刷新句柄
             var progress = new Progress<ArchiveProgressReport>(report =>
             {
                 if (!string.IsNullOrEmpty(report.Message))
@@ -170,12 +201,18 @@ namespace ComicArchiver
             }
         }
 
+        /// <summary>
+        /// 点击 [取消] 按钮事件，触发取消令牌中止正在进行的打包任务。
+        /// </summary>
         private void BtnCancel_Click(object sender, RoutedEventArgs e)
         {
             _cts?.Cancel();
             BtnCancel.IsEnabled = false;
         }
 
+        /// <summary>
+        /// 点击 [打开目标文件夹] 按钮事件，启动 Explorer 进程定位当前选定的目录。
+        /// </summary>
         private void BtnOpenFolder_Click(object sender, RoutedEventArgs e)
         {
             string path = _selectedPaths.FirstOrDefault();
@@ -194,6 +231,9 @@ namespace ComicArchiver
             }
         }
 
+        /// <summary>
+        /// 拖拽移入窗口事件响应，验证鼠标悬停包含文件/文件夹拖拽数据。
+        /// </summary>
         private void Window_DragOver(object sender, DragEventArgs e)
         {
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
@@ -207,6 +247,9 @@ namespace ComicArchiver
             e.Handled = true;
         }
 
+        /// <summary>
+        /// 拖拽放置文件/文件夹放置松开鼠标事件响应，提取拖拽路径并设为当前目标。
+        /// </summary>
         private void Window_Drop(object sender, DragEventArgs e)
         {
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
@@ -220,6 +263,10 @@ namespace ComicArchiver
             }
         }
 
+        /// <summary>
+        /// 控制 UI 控件在“运行中”与“空闲中”状态切换时的可操作性（禁用/启用）。
+        /// </summary>
+        /// <param name="isRunning">当前是否正在运行打包任务</param>
         private void SetUiRunningState(bool isRunning)
         {
             BtnStart.IsEnabled = !isRunning;
@@ -227,7 +274,7 @@ namespace ComicArchiver
             BtnBrowse.IsEnabled = !isRunning;
             TxtTargetDir.IsEnabled = !isRunning;
             RbModeSubFolders.IsEnabled = !isRunning;
-            RbModeDirect.IsEnabled = !isRunning;
+            RbModeBatch.IsEnabled = !isRunning;
             RbCbz.IsEnabled = !isRunning;
             RbZip.IsEnabled = !isRunning;
             ChkDeleteOriginal.IsEnabled = !isRunning;
@@ -240,6 +287,11 @@ namespace ComicArchiver
             }
         }
 
+        /// <summary>
+        /// 向日志列表框添加一条附带时间戳和配色样式的日志记录，并自动滚动至最底部。
+        /// </summary>
+        /// <param name="message">日志文本内容</param>
+        /// <param name="level">日志等级类型</param>
         private void AddLog(string message, LogLevel level)
         {
             Brush brush;
@@ -271,3 +323,4 @@ namespace ComicArchiver
         }
     }
 }
+

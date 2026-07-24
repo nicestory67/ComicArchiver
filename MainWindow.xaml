@@ -26,7 +26,7 @@
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                     <hc:UniformSpacingPanel Spacing="15">
                         <RadioButton x:Name="RbModeSubFolders" Content="子目录模式" IsChecked="True" Checked="Mode_Changed"/>
-                        <RadioButton x:Name="RbModeDirect" Content="批量文件夹直压" Checked="Mode_Changed"/>
+                        <RadioButton x:Name="RbModeBatch" Content="批量模式" Checked="Mode_Changed"/>
                     </hc:UniformSpacingPanel>
                 </StackPanel>
             </Grid>
