@@ -30,11 +30,19 @@ namespace ComicArchiver
         /// <summary>
         /// 初始化 MainWindow 窗口实例。
         /// </summary>
-        public MainWindow()
+        public MainWindow() : this(null)
+        {
+        }
+
+        /// <summary>
+        /// 初始化 MainWindow 窗口实例，并载入指定的目标路径。
+        /// </summary>
+        /// <param name="initialPaths">初始目标文件/文件夹路径数组</param>
+        public MainWindow(params string[] initialPaths)
         {
             InitializeComponent();
             _archiverService = new ArchiverService();
-            SetTargetPath();
+            SetTargetPath(initialPaths);
 
             // 默认设置为 HandyControl 暗色主题
             HandyControl.Themes.Theme.SetSkin(this, HandyControl.Data.SkinType.Dark);

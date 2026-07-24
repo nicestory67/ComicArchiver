@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -8,32 +9,40 @@ namespace ComicArchiver.Services
 {
     /// <summary>
     /// 控制台辅助工具类。
-    /// 提供针对 Win32 API 的封装，用于在 GUI 应用程序运行于命令行（CMD / PowerShell）模式时
-    /// 动态附加控制台窗口或分配独立控制台，并对标准输入输出流进行正确重定向。
+    /// 提供针对 Win32 API 的封装，用于在 WinExe GUI 应用程序运行于命令行（CMD / PowerShell）模式时
+    /// 动态附加父进程控制台，并正确重定向 Win32 与 .NET System.Console 标准输出流。
     /// </summary>
     public static class ConsoleHelper
     {
         /// <summary>
         /// 将当前进程附加到指定进程的控制台。
         /// </summary>
-        /// <param name="dwProcessId">目标进程 ID，传入 -1 (ATTACH_PARENT_PROCESS) 表示附加到父进程控制台</param>
-        /// <returns>成功返回 true，失败返回 false</returns>
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool AttachConsole(int dwProcessId);
 
         /// <summary>
         /// 为当前进程分配一个新的控制台窗口。
         /// </summary>
-        /// <returns>成功返回 true，失败返回 false</returns>
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool AllocConsole();
 
         /// <summary>
         /// 分离（释放）当前进程附加或创建的控制台。
         /// </summary>
-        /// <returns>成功返回 true，失败返回 false</returns>
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool FreeConsole();
+
+        /// <summary>
+        /// 获取 Win32 标准句柄。
+        /// </summary>
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr GetStdHandle(int nStdHandle);
+
+        /// <summary>
+        /// 设置 Win32 标准句柄。
+        /// </summary>
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetStdHandle(int nStdHandle, IntPtr hHandle);
 
         /// <summary>
         /// 创建或打开文件或 I/O 设备（此处用于打开控制台输出设备 "CONOUT$"）。
@@ -48,25 +57,18 @@ namespace ComicArchiver.Services
             int flagsAndAttributes,
             IntPtr templateFile);
 
-        /// <summary>
-        /// 附加到父进程控制台的标识常数。
-        /// </summary>
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint GetFileType(IntPtr hFile);
+
         private const int ATTACH_PARENT_PROCESS = -1;
-
-        /// <summary>
-        /// Win32 通用写权限掩码。
-        /// </summary>
+        private const int STD_OUTPUT_HANDLE = -11;
+        private const int STD_ERROR_HANDLE = -12;
         private const uint GENERIC_WRITE = 0x40000000;
-
-        /// <summary>
-        /// Win32 共享写模式标识。
-        /// </summary>
         private const int FILE_SHARE_WRITE = 0x00000002;
-
-        /// <summary>
-        /// Win32 打开现有设备/文件标识。
-        /// </summary>
         private const int OPEN_EXISTING = 3;
+
+        private const uint FILE_TYPE_DISK = 0x0001;
+        private const uint FILE_TYPE_PIPE = 0x0003;
 
         /// <summary>
         /// 获取当前是否已附加到控制台。
@@ -82,29 +84,52 @@ namespace ComicArchiver.Services
         {
             if (IsConsoleAttached) return;
 
-            // 优先尝试附加到启动本程序的终端控制台（父进程）
+            // 1. 检查 stdout 是否已被 Shell 重定向到文件或管道 (如 > log.txt 或 | findstr)
+            IntPtr existingOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (existingOut != IntPtr.Zero && existingOut != new IntPtr(-1))
+            {
+                uint fileType = GetFileType(existingOut);
+                if (fileType == FILE_TYPE_DISK || fileType == FILE_TYPE_PIPE)
+                {
+                    try
+                    {
+                        var safeHandle = new SafeFileHandle(existingOut, false);
+                        var fileStream = new FileStream(safeHandle, FileAccess.Write);
+                        var writer = new StreamWriter(fileStream, Encoding.UTF8) { AutoFlush = true };
+                        Console.SetOut(writer);
+                        Console.SetError(writer);
+                        IsConsoleAttached = true;
+                        return;
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            // 2. 交互式终端：附加到启动本程序的终端控制台（父进程，如 CMD / PowerShell）
             if (AttachConsole(ATTACH_PARENT_PROCESS))
             {
                 IsConsoleAttached = true;
                 InitializeConsoleStreams();
+                return;
             }
-            else
+
+            // 3. 兜底回退：获取系统标准输出流
+            try
             {
-                // 回退方案：直接绑定现有的系统 stdout/stderr 标准流
-                try
+                var stdout = Console.OpenStandardOutput();
+                if (stdout != null && stdout != Stream.Null)
                 {
-                    var stdout = Console.OpenStandardOutput();
-                    if (stdout != null && stdout != Stream.Null)
-                    {
-                        var writer = new StreamWriter(stdout, Encoding.UTF8) { AutoFlush = true };
-                        Console.SetOut(writer);
-                        Console.SetError(writer);
-                    }
+                    var encoding = Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
+                    var writer = new StreamWriter(stdout, encoding) { AutoFlush = true };
+                    Console.SetOut(writer);
+                    Console.SetError(writer);
+                    IsConsoleAttached = true;
                 }
-                catch
-                {
-                    // 忽略标准流绑定异常
-                }
+            }
+            catch
+            {
             }
         }
 
@@ -116,15 +141,28 @@ namespace ComicArchiver.Services
         {
             try
             {
-                // 获取 Win32 控制台输出设备句柄 CONOUT$
                 IntPtr stdOutHandle = CreateFile("CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
                 if (stdOutHandle != IntPtr.Zero && stdOutHandle != new IntPtr(-1))
                 {
-                    var safeHandle = new SafeFileHandle(stdOutHandle, true);
+                    // 重置 Win32 标准句柄，使 .NET 能够识别终端句柄
+                    SetStdHandle(STD_OUTPUT_HANDLE, stdOutHandle);
+                    SetStdHandle(STD_ERROR_HANDLE, stdOutHandle);
+
+                    Encoding encoding;
+                    try
+                    {
+                        encoding = Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
+                    }
+                    catch
+                    {
+                        encoding = Encoding.Default;
+                    }
+
+                    Console.OutputEncoding = encoding;
+                    var safeHandle = new SafeFileHandle(stdOutHandle, false);
                     var fileStream = new FileStream(safeHandle, FileAccess.Write);
-                    // 使用当前系统区域设置对应的 OEM 编码（如 GBK / CodePage 936）
-                    var encoding = Encoding.GetEncoding(System.Globalization.CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
                     var standardOutput = new StreamWriter(fileStream, encoding) { AutoFlush = true };
+
                     Console.SetOut(standardOutput);
                     Console.SetError(standardOutput);
                 }
