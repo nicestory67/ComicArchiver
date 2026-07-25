@@ -6,7 +6,6 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using SevenZip;
 
 namespace ComicArchiver.Services
 {
@@ -52,22 +51,6 @@ namespace ComicArchiver.Services
     }
 
     /// <summary>
-    /// 批量处理模式枚举。
-    /// </summary>
-    public enum BatchMode
-    {
-        /// <summary>
-        /// 子文件夹模式：对选定目标目录下的各个子文件夹分别打包压缩为 cbz/zip。
-        /// </summary>
-        SubFolders,
-
-        /// <summary>
-        /// 批量模式：压缩输入目录下的所有目录的子目录。
-        /// </summary>
-        Batch
-    }
-
-    /// <summary>
     /// 归档处理配置参数类。
     /// </summary>
     public class ArchiverOptions
@@ -75,22 +58,19 @@ namespace ComicArchiver.Services
         /// <summary> 目标路径列表（可包含一个或多个文件夹路径） </summary>
         public List<string> TargetPaths { get; set; } = new List<string>();
 
-        /// <summary> 批量打包模式（默认：子文件夹模式） </summary>
-        public BatchMode Mode { get; set; } = BatchMode.SubFolders;
-
         /// <summary> 目标压缩扩展名格式（支持 cbz 或 zip，默认: cbz） </summary>
         public string ArchiveType { get; set; } = "cbz";
 
         /// <summary> 压缩成功后是否删除原始文件夹（默认: true） </summary>
         public bool DeleteOriginalFolder { get; set; } = true;
 
-        /// <summary> 排除文件的通配符过滤规则（多个格式可用 ';' 或 ',' 分隔，默认: *.db） </summary>
-        public string ExcludePattern { get; set; } = "*.db";
+        /// <summary> 额外包含的文件通配符规则（多个格式可用 ';' 或 ',' 分隔，默认: *.xml） </summary>
+        public string AdditionalIncludePattern { get; set; } = "*.xml";
     }
 
     /// <summary>
     /// 漫画文件夹打包与归档核心服务类。
-    /// 提供文件夹检索、Zip/CBZ 结构生成、SevenZip CRC32 计算以及源文件夹清理等功能。
+    /// 提供文件夹检索、Zip/CBZ 结构生成以及源文件夹清理等功能。
     /// </summary>
     public class ArchiverService
     {
@@ -101,12 +81,12 @@ namespace ComicArchiver.Services
         /// <param name="options">归档配置选项</param>
         /// <param name="progress">进度与日志回调接口</param>
         /// <param name="cancellationToken">取消操作令牌</param>
-        public async Task ProcessAsync(
+        public async Task<(int Total, int Success)> ProcessAsync(
             ArchiverOptions options,
             IProgress<ArchiveProgressReport> progress = null,
             CancellationToken cancellationToken = default)
         {
-            await Task.Run(() => Process(options, progress, cancellationToken), cancellationToken);
+            return await Task.Run(() => Process(options, progress, cancellationToken), cancellationToken);
         }
 
         /// <summary>
@@ -115,12 +95,12 @@ namespace ComicArchiver.Services
         /// <param name="options">归档配置选项</param>
         /// <param name="progress">进度与日志回调接口</param>
         /// <param name="cancellationToken">取消操作令牌</param>
-        public async Task ExtractAsync(
+        public async Task<(int Total, int Success)> ExtractAsync(
             ArchiverOptions options,
             IProgress<ArchiveProgressReport> progress = null,
             CancellationToken cancellationToken = default)
         {
-            await Task.Run(() => Extract(options, progress, cancellationToken), cancellationToken);
+            return await Task.Run(() => Extract(options, progress, cancellationToken), cancellationToken);
         }
 
         /// <summary>
@@ -130,7 +110,7 @@ namespace ComicArchiver.Services
         /// <param name="options">归档配置选项</param>
         /// <param name="progress">进度与日志回调接口</param>
         /// <param name="cancellationToken">取消操作令牌</param>
-        public void Extract(
+        public (int Total, int Success) Extract(
             ArchiverOptions options,
             IProgress<ArchiveProgressReport> progress = null,
             CancellationToken cancellationToken = default)
@@ -138,7 +118,7 @@ namespace ComicArchiver.Services
             if (options.TargetPaths == null || options.TargetPaths.Count == 0)
             {
                 Report(progress, "错误: 未选择任何目标目录。", LogLevel.Error);
-                return;
+                return (0, 0);
             }
 
             List<string> archivesToExtract = new List<string>();
@@ -148,11 +128,7 @@ namespace ComicArchiver.Services
             {
                 if (Directory.Exists(path))
                 {
-                    SearchOption searchOption = options.Mode == BatchMode.Batch
-                        ? SearchOption.AllDirectories
-                        : SearchOption.TopDirectoryOnly;
-
-                    var files = Directory.GetFiles(path, "*.*", searchOption)
+                    var files = SafeGetFiles(path, "*.*")
                         .Where(f => f.EndsWith(".cbz", StringComparison.OrdinalIgnoreCase) ||
                                     f.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                         .ToArray();
@@ -175,12 +151,13 @@ namespace ComicArchiver.Services
             if (total == 0)
             {
                 Report(progress, "提示: 未找到需要解压的 CBZ/ZIP 压缩包。", LogLevel.Warning);
-                return;
+                return (0, 0);
             }
 
             Report(progress, $"开始批量解压处理，共 {total} 个压缩包文件", LogLevel.Info);
 
             int processedCount = 0;
+            int successCount = 0;
 
             foreach (var archivePath in archivesToExtract)
             {
@@ -188,21 +165,26 @@ namespace ComicArchiver.Services
 
                 string archiveName = Path.GetFileName(archivePath);
                 string archiveNameWithoutExt = Path.GetFileNameWithoutExtension(archivePath);
-                string parentDir = Path.GetDirectoryName(archivePath);
+                string parentDir = Path.GetDirectoryName(archivePath) ?? Path.GetPathRoot(archivePath) ?? archivePath;
                 string targetFolder = Path.Combine(parentDir, archiveNameWithoutExt);
 
-                Report(progress, $"[{processedCount + 1}/{total}] 正在解压: \"{archiveName}\"...", LogLevel.Info, processedCount, total, archiveName);
+                Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 正在解压 : {archiveName}", LogLevel.Info, processedCount, total, archiveName);
 
                 bool extractSuccess = false;
                 try
                 {
                     ExtractArchiveToDirectory(archivePath, targetFolder, cancellationToken);
                     extractSuccess = true;
-                    Report(progress, $"  ✓ 已解压至文件夹: \"{archiveNameWithoutExt}\"", LogLevel.Success, processedCount + 1, total, archiveName);
+                }
+                catch (OperationCanceledException)
+                {
+                    try { if (Directory.Exists(targetFolder)) ForceDeleteDirectory(targetFolder); } catch (Exception e) { Report(progress, $"回滚清理中断的文件夹失败: {e.Message}", LogLevel.Warning); }
+                    throw;
                 }
                 catch (Exception ex)
                 {
-                    Report(progress, $"  ✗ 解压失败 \"{archiveName}\": {ex.Message}", LogLevel.Error, processedCount, total, archiveName);
+                    Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 解压失败 : {ex.Message}", LogLevel.Error, processedCount, total, archiveName);
+                    try { if (Directory.Exists(targetFolder)) ForceDeleteDirectory(targetFolder); } catch (Exception e) { Report(progress, $"解压失败后清理残留文件夹失败: {e.Message}", LogLevel.Warning); }
                 }
 
                 // 解压成功且开启了“清理原文件”选项时删除原压缩包
@@ -211,18 +193,24 @@ namespace ComicArchiver.Services
                     try
                     {
                         File.Delete(archivePath);
-                        Report(progress, $"  ✓ 已清理原压缩包: \"{archiveName}\"", LogLevel.Info, processedCount + 1, total, archiveName);
+                        Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 解压并清理成功 : {archiveNameWithoutExt}", LogLevel.Success, processedCount + 1, total, archiveName);
                     }
                     catch (Exception ex)
                     {
-                        Report(progress, $"  ⚠ 删除原压缩包失败 \"{archiveName}\": {ex.Message}", LogLevel.Warning, processedCount + 1, total, archiveName);
+                        Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 解压成功但清理失败 : {ex.Message}", LogLevel.Warning, processedCount + 1, total, archiveName);
                     }
                 }
+                else if (extractSuccess)
+                {
+                    Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 解压成功 : {archiveNameWithoutExt}", LogLevel.Success, processedCount + 1, total, archiveName);
+                }
 
+                if (extractSuccess) successCount++;
                 processedCount++;
             }
 
-            Report(progress, $"批量解压完成！共成功处理 {processedCount}/{total} 个压缩包。", LogLevel.Success, processedCount, total);
+            Report(progress, $"==== 批量解压完成！成功率: {successCount}/{total} ====", LogLevel.Success, processedCount, total);
+            return (total, successCount);
         }
 
         /// <summary>
@@ -245,7 +233,7 @@ namespace ComicArchiver.Services
             }
 
             using (var zipStream = File.OpenRead(archivePath))
-            using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read, false))
+            using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read, false, System.Text.Encoding.Default))
             {
                 foreach (var entry in archive.Entries)
                 {
@@ -286,7 +274,7 @@ namespace ComicArchiver.Services
         /// <param name="options">归档配置选项</param>
         /// <param name="progress">进度与日志回调接口</param>
         /// <param name="cancellationToken">取消操作令牌</param>
-        public void Process(
+        public (int Total, int Success) Process(
             ArchiverOptions options,
             IProgress<ArchiveProgressReport> progress = null,
             CancellationToken cancellationToken = default)
@@ -295,7 +283,7 @@ namespace ComicArchiver.Services
             if (options.TargetPaths == null || options.TargetPaths.Count == 0)
             {
                 Report(progress, "错误: 未选择任何目标目录。", LogLevel.Error);
-                return;
+                return (0, 0);
             }
 
             // 校验格式扩展名
@@ -303,43 +291,27 @@ namespace ComicArchiver.Services
             if (ext != "cbz" && ext != "zip")
             {
                 Report(progress, $"错误: 不支持的压缩格式 '{options.ArchiveType}'。", LogLevel.Error);
-                return;
+                return (0, 0);
             }
 
-            // 解析排除文件的通配符规则
-            string[] excludePatterns = string.IsNullOrWhiteSpace(options.ExcludePattern)
-                ? new[] { "*.db" }
-                : options.ExcludePattern.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
-                                        .Select(p => p.Trim())
-                                        .ToArray();
+            // 解析额外包含文件的通配符规则并预编译为正则表达式
+            var patternStrings = string.IsNullOrWhiteSpace(options.AdditionalIncludePattern)
+                ? new[] { "*.xml" }
+                : options.AdditionalIncludePattern.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                        .Select(p => p.Trim());
+
+            Regex[] includeRegexes = patternStrings
+                .Select(p => new Regex("^" + Regex.Escape(p).Replace("\\*", ".*").Replace("\\?", ".") + "$", RegexOptions.IgnoreCase | RegexOptions.Compiled))
+                .ToArray();
 
             List<string> foldersToProcess = new List<string>();
 
-            // 根据批量模式搜寻待打包的文件夹
-            if (options.Mode == BatchMode.SubFolders)
+            // 智能搜寻待打包的文件夹
+            foreach (var path in options.TargetPaths)
             {
-                foreach (var path in options.TargetPaths)
+                if (Directory.Exists(path))
                 {
-                    if (Directory.Exists(path))
-                    {
-                        var subDirs = Directory.GetDirectories(path);
-                        foldersToProcess.AddRange(subDirs);
-                    }
-                }
-            }
-            else if (options.Mode == BatchMode.Batch)
-            {
-                foreach (var path in options.TargetPaths)
-                {
-                    if (Directory.Exists(path))
-                    {
-                        var level1Dirs = Directory.GetDirectories(path);
-                        foreach (var dir1 in level1Dirs)
-                        {
-                            var level2Dirs = Directory.GetDirectories(dir1);
-                            foldersToProcess.AddRange(level2Dirs);
-                        }
-                    }
+                    FindComicFolders(path, foldersToProcess);
                 }
             }
 
@@ -347,12 +319,13 @@ namespace ComicArchiver.Services
             if (total == 0)
             {
                 Report(progress, "提示: 未找到需要压缩的子文件夹。", LogLevel.Warning);
-                return;
+                return (0, 0);
             }
 
             Report(progress, $"开始批量打包处理，共 {total} 个文件夹，格式: .{ext}", LogLevel.Info);
 
             int processedCount = 0;
+            int successCount = 0;
 
             // 循环依次压缩处理每个文件夹
             foreach (var folderPath in foldersToProcess)
@@ -360,10 +333,10 @@ namespace ComicArchiver.Services
                 cancellationToken.ThrowIfCancellationRequested();
 
                 string folderName = Path.GetFileName(folderPath);
-                string parentDir = Path.GetDirectoryName(folderPath);
+                string parentDir = Path.GetDirectoryName(folderPath) ?? Path.GetPathRoot(folderPath) ?? folderPath;
                 string zipPath = Path.Combine(parentDir, $"{folderName}.{ext}");
 
-                Report(progress, $"[{processedCount + 1}/{total}] 正在压缩: \"{folderName}\"...", LogLevel.Info, processedCount, total, folderName);
+                Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 正在压缩 : {folderName}", LogLevel.Info, processedCount, total, folderName);
 
                 bool archiveSuccess = false;
                 try
@@ -375,13 +348,18 @@ namespace ComicArchiver.Services
                     }
 
                     // 创建 Zip/CBZ 文件结构
-                    CreateZipFromDirectory(folderPath, zipPath, excludePatterns, cancellationToken);
+                    CreateZipFromDirectory(folderPath, zipPath, includeRegexes, cancellationToken);
                     archiveSuccess = true;
-                    Report(progress, $"  ✓ 已生成: \"{folderName}.{ext}\"", LogLevel.Success, processedCount + 1, total, folderName);
+                }
+                catch (OperationCanceledException)
+                {
+                    try { if (File.Exists(zipPath)) File.Delete(zipPath); } catch (Exception e) { Report(progress, $"清理未完成的压缩包失败: {e.Message}", LogLevel.Warning); }
+                    throw;
                 }
                 catch (Exception ex)
                 {
-                    Report(progress, $"  ✗ 压缩失败 \"{folderName}\": {ex.Message}", LogLevel.Error, processedCount, total, folderName);
+                    Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 压缩失败 : {ex.Message}", LogLevel.Error, processedCount, total, folderName);
+                    try { if (File.Exists(zipPath)) File.Delete(zipPath); } catch (Exception e) { Report(progress, $"压缩失败后清理残留文件失败: {e.Message}", LogLevel.Warning); }
                 }
 
                 // 压缩成功且开启了“删除原始文件夹”选项时清理源文件夹
@@ -389,37 +367,42 @@ namespace ComicArchiver.Services
                 {
                     try
                     {
-                        CleanFiles(folderPath, excludePatterns);
-                        Directory.Delete(folderPath, true);
-                        Report(progress, $"  ✓ 已清理原始文件夹: \"{folderName}\"", LogLevel.Info, processedCount + 1, total, folderName);
+                        ForceDeleteDirectory(folderPath);
+                        Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 压缩并清理成功 : {folderName}.{ext}", LogLevel.Success, processedCount + 1, total, folderName);
                     }
                     catch (Exception ex)
                     {
-                        Report(progress, $"  ⚠ 删除原始文件夹失败 \"{folderName}\": {ex.Message}", LogLevel.Warning, processedCount + 1, total, folderName);
+                        Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 压缩成功但清理失败 : {ex.Message}", LogLevel.Warning, processedCount + 1, total, folderName);
                     }
                 }
+                else if (archiveSuccess)
+                {
+                    Report(progress, $"[{processedCount + 1:D2}/{total:D2}] 压缩成功 : {folderName}.{ext}", LogLevel.Success, processedCount + 1, total, folderName);
+                }
 
+                if (archiveSuccess) successCount++;
                 processedCount++;
             }
 
-            Report(progress, $"批量打包完成！共成功处理 {processedCount}/{total} 个文件夹。", LogLevel.Success, processedCount, total);
+            Report(progress, $"==== 批量打包完成！成功率: {successCount}/{total} ====", LogLevel.Success, processedCount, total);
+            return (total, successCount);
         }
 
         /// <summary>
         /// 从源文件夹遍历文件并生成 Zip/CBZ 归档压缩包。
-        /// 过滤符合排除通配符的文件，并调用 SevenZip 计算 CRC32 值。
+        /// 默认仅包含图片文件，额外包含匹配规则的文件。
         /// </summary>
         /// <param name="sourceDir">源文件夹路径</param>
         /// <param name="destinationZipPath">生成的 Zip/CBZ 文件目标路径</param>
-        /// <param name="excludePatterns">排除通配符数组</param>
+        /// <param name="includeRegexes">预编译的额外包含正则表达式数组</param>
         /// <param name="cancellationToken">取消操作令牌</param>
         private void CreateZipFromDirectory(
             string sourceDir,
             string destinationZipPath,
-            string[] excludePatterns,
+            Regex[] includeRegexes,
             CancellationToken cancellationToken)
         {
-            var files = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories);
+            var files = SafeGetFiles(sourceDir, "*");
 
             using (var zipStream = new FileStream(destinationZipPath, FileMode.Create, FileAccess.Write, FileShare.None))
             using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, false))
@@ -431,16 +414,16 @@ namespace ComicArchiver.Services
                     cancellationToken.ThrowIfCancellationRequested();
 
                     string fileName = Path.GetFileName(file);
-                    if (IsExcluded(fileName, excludePatterns))
+                    string ext = Path.GetExtension(fileName).ToLowerInvariant();
+                    bool isImage = ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".bmp" || ext == ".gif";
+
+                    if (!isImage && !IsIncluded(fileName, includeRegexes))
                     {
                         continue;
                     }
 
                     // 计算在压缩包内的相对路径（统一使用 Unix 风格斜杠 '/'）
                     string relativePath = file.Substring(sourceDirLen).Replace('\\', '/');
-
-                    // 利用 7z LZMA SDK 计算文件的 CRC32 校验码
-                    uint crc = CalculateFileCrc32(file);
 
                     var entry = archive.CreateEntry(relativePath, CompressionLevel.Optimal);
                     using (var entryStream = entry.Open())
@@ -453,66 +436,56 @@ namespace ComicArchiver.Services
         }
 
         /// <summary>
-        /// 使用 7-Zip (LZMA SDK) 的 CRC 类计算文件的 CRC32 校验和。
+        /// 智能递归搜寻包含图片的漫画文件夹。
+        /// 如果当前文件夹包含图片，则将其视为一本漫画加入列表，不再向下递归。
+        /// 否则继续递归搜寻其子文件夹。
         /// </summary>
-        /// <param name="file">需要计算 CRC32 的文件路径</param>
-        /// <returns>CRC32 无符号 32 位整数；若读取发生异常返回 0</returns>
-        private uint CalculateFileCrc32(string file)
+        private void FindComicFolders(string dir, List<string> resultList)
         {
             try
             {
-                var crc = new CRC();
-                crc.Init();
-                using (var fs = File.OpenRead(file))
+                var subDirs = Directory.GetDirectories(dir);
+                if (subDirs.Length > 0)
                 {
-                    byte[] buffer = new byte[8192];
-                    int bytesRead;
-                    while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
+                    // 方案 B：只要有子文件夹，就优先拆分，忽略外层的零散图片
+                    foreach (var subDir in subDirs)
                     {
-                        crc.Update(buffer, 0, (uint)bytesRead);
+                        FindComicFolders(subDir, resultList);
                     }
                 }
-                return crc.GetDigest();
+                else
+                {
+                    // 没有子目录时，才检查当前文件夹是否包含图片
+                    var files = Directory.GetFiles(dir);
+                    bool hasImages = files.Any(f => 
+                    {
+                        string ext = Path.GetExtension(f).ToLowerInvariant();
+                        return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".bmp" || ext == ".gif";
+                    });
+
+                    if (hasImages)
+                    {
+                        resultList.Add(dir);
+                    }
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                return 0;
+                System.Diagnostics.Debug.WriteLine($"智能扫描目录出错 {dir}: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// 在删除原始文件夹之前清理匹配排除规则的文件（如清除 .db 等系统缩略图文件）。
-        /// </summary>
-        /// <param name="dir">要清理的目标文件夹</param>
-        /// <param name="patterns">通配符规则数组</param>
-        private void CleanFiles(string dir, string[] patterns)
-        {
-            try
-            {
-                foreach (var pattern in patterns)
-                {
-                    var files = Directory.GetFiles(dir, pattern, SearchOption.AllDirectories);
-                    foreach (var file in files)
-                    {
-                        try { File.Delete(file); } catch { }
-                    }
-                }
-            }
-            catch { }
-        }
-
-        /// <summary>
-        /// 检查文件名是否与通配符规则匹配（例如将 "*.db" 转换为正则表达式匹配）。
+        /// 检查文件名是否与预编译的额外包含正则表达式数组匹配。
         /// </summary>
         /// <param name="fileName">待校验的文件名</param>
-        /// <param name="patterns">通配符模式数组</param>
-        /// <returns>如果匹配（应排除）返回 true，否则返回 false</returns>
-        private bool IsExcluded(string fileName, string[] patterns)
+        /// <param name="includeRegexes">预编译的正则表达式数组</param>
+        /// <returns>如果匹配（应包含）返回 true，否则返回 false</returns>
+        private bool IsIncluded(string fileName, Regex[] includeRegexes)
         {
-            foreach (var pattern in patterns)
+            foreach (var regex in includeRegexes)
             {
-                string regex = "^" + Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
-                if (Regex.IsMatch(fileName, regex, RegexOptions.IgnoreCase))
+                if (regex.IsMatch(fileName))
                 {
                     return true;
                 }
@@ -539,6 +512,42 @@ namespace ComicArchiver.Services
                 TotalFolders = total,
                 CurrentFolder = folder
             });
+        }
+
+        private List<string> SafeGetFiles(string path, string searchPattern = "*")
+        {
+            List<string> files = new List<string>();
+            try
+            {
+                files.AddRange(Directory.GetFiles(path, searchPattern));
+                foreach (string directory in Directory.GetDirectories(path))
+                {
+                    files.AddRange(SafeGetFiles(directory, searchPattern));
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"读取目录出错 {path}: {ex.Message}");
+            }
+            return files;
+        }
+
+        private void ForceDeleteDirectory(string path)
+        {
+            try
+            {
+                var directory = new DirectoryInfo(path) { Attributes = FileAttributes.Normal };
+                foreach (var info in directory.GetFileSystemInfos("*", SearchOption.AllDirectories))
+                {
+                    info.Attributes = FileAttributes.Normal;
+                }
+                Directory.Delete(path, true);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"强行删除文件夹失败: {path}, {ex.Message}");
+                throw;
+            }
         }
     }
 }

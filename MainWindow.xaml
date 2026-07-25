@@ -4,12 +4,12 @@
            xmlns:hc="https://handyorg.github.io/handycontrol"
            Title="漫画打包工具"
            Icon="icons8_moleskine.ico"
-           Height="425" Width="580"
+           SizeToContent="Height" Width="580"
            ResizeMode="CanMinimize"
            WindowStartupLocation="CenterScreen"
            ShowTitle="True"
            Background="{DynamicResource RegionBrush}"
-           AllowDrop="True" Drop="Window_Drop" DragOver="Window_DragOver">
+           AllowDrop="True" PreviewDrop="Window_Drop" PreviewDragOver="Window_DragOver">
     
     <hc:Window.NonClientAreaContent>
         <Grid>
@@ -34,50 +34,52 @@
         </Grid.RowDefinitions>
 
         <!-- Main Content -->
-        <StackPanel Margin="10">
+        <Grid Margin="10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
 
             <!-- Mode & Path Card -->
-            <!-- Mode Selector -->
-            <Grid>
-                <TextBlock Text="模式:" />
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                    <hc:UniformSpacingPanel Spacing="15">
-                        <RadioButton x:Name="RbModeSubFolders" Content="子目录模式" IsChecked="True" Checked="Mode_Changed"/>
-                        <RadioButton x:Name="RbModeBatch" Content="批量模式" Checked="Mode_Changed"/>
-                    </hc:UniformSpacingPanel>
-                </StackPanel>
-            </Grid>
 
-            <Grid Margin="0,15">
+
+            <Grid Grid.Row="0" Margin="0,0,0,10">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <hc:TextBox x:Name="TxtTargetDir" Grid.Column="0" Margin="0,0,8,0" hc:InfoElement.Placeholder="请选择或拖拽目标文件夹..." hc:InfoElement.ShowClearButton="True"/>
-                <Button x:Name="BtnBrowse" Grid.Column="1" Content="浏览..." Width="100" Click="BtnBrowse_Click" />
+                <hc:TextBox x:Name="TxtTargetDir" Grid.Column="0" Margin="0,0,8,0" hc:InfoElement.Placeholder="请选择或拖拽目标文件夹..." hc:InfoElement.ShowClearButton="True" TextChanged="TxtTargetDir_TextChanged"/>
+                <Button x:Name="BtnBrowse" Grid.Column="1" Content="浏览..." Width="80" Margin="0,0,8,0" Cursor="Hand" Click="BtnBrowse_Click" />
+                <Button x:Name="BtnOpenFolder" Grid.Column="2" Content="📁 打开目录" Width="90" Cursor="Hand" Click="BtnOpenFolder_Click" />
             </Grid>
             
-            <Grid>
+            <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                    <TextBlock x:Name="TxtDragHint" Grid.Column="0" Text="💡 提示：可选择单个目录或拖入多个文件夹" />
+                    <TextBlock x:Name="TxtDragHint" Grid.Column="0" Text="💡 提示：请拖入单个文件夹或点击 [浏览...] 选择" Style="{StaticResource TextBlockDefault}" HorizontalAlignment="Left" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,10,0">
                     <hc:UniformSpacingPanel Spacing="10">
-                        <TextBlock Text="目标格式：" />
-                        <RadioButton x:Name="RbCbz" Content="CBZ" IsChecked="True" />
-                        <RadioButton x:Name="RbZip" Content="ZIP" />
+                        <TextBlock Text="打包输出格式：" Style="{StaticResource TextBlockDefault}" />
+                        <RadioButton x:Name="RbCbz" Content="CBZ" IsChecked="True" Cursor="Hand" />
+                        <RadioButton x:Name="RbZip" Content="ZIP" Cursor="Hand" />
                     </hc:UniformSpacingPanel>
                 </StackPanel>
             </Grid>
 
-            <hc:Divider Margin="0,15" />
+            <hc:Divider Grid.Row="2" Margin="0,10" />
             
             <!-- Options Card -->
-            <Grid>
+            <Grid Grid.Row="3">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
@@ -85,46 +87,52 @@
 
                 <!-- Format & Options -->
                 <StackPanel Grid.Column="0" HorizontalAlignment="Left" VerticalAlignment="Center">
-                    <CheckBox x:Name="ChkDeleteOriginal" Content="清理原文件/文件夹" IsChecked="True" />
+                    <CheckBox x:Name="ChkDeleteOriginal" Content="清理原文件/文件夹" IsChecked="True" Cursor="Hand" />
                 </StackPanel>
 
-                <!-- Exclude Pattern -->
+                <!-- Additional Include Pattern -->
                 <StackPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <hc:TextBox x:Name="TxtExclude"
+                    <hc:TextBox x:Name="TxtAdditionalInclude"
                         Width="300"
                         hc:InfoElement.ShowClearButton="True"
                         hc:InfoElement.TitlePlacement="Left"
-                        hc:InfoElement.Placeholder="排除通配符 (分号分隔):"
-                        hc:InfoElement.Title="排除通配符 (分号分隔):"
-                        Text="*.db"/>
+                        hc:InfoElement.Placeholder="额外包含文件 (分号分隔):"
+                        hc:InfoElement.Title="额外包含文件 (分号分隔):"
+                        Text="*.xml"/>
                 </StackPanel>
             </Grid>
-            
-            <hc:Divider Margin="0,15" />
+
+            <hc:Divider Grid.Row="4" Margin="0,10" />
 
             <!-- Progress & Log Card -->
-            <StackPanel>
-                <Grid>
-                    <TextBlock x:Name="TxtStatus" Text="准备就绪" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtPercentage" Text="0%" HorizontalAlignment="Right" VerticalAlignment="Center"/>
-                </Grid>
+            <Grid Grid.Row="5" Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="TxtStatus" Grid.Column="0" Text="准备就绪" HorizontalAlignment="Left" Style="{StaticResource TextBlockDefault}"/>
+                <hc:ComboBox x:Name="CmbLogLevelFilter" Grid.Column="1" Width="70" SelectedIndex="0" Cursor="Hand" SelectionChanged="CmbLogLevelFilter_SelectionChanged" Style="{StaticResource ComboBox.Small}">
+                    <ComboBoxItem Content="全部" />
+                    <ComboBoxItem Content="信息" />
+                    <ComboBoxItem Content="成功" />
+                    <ComboBoxItem Content="警告" />
+                    <ComboBoxItem Content="错误" />
+                </hc:ComboBox>
+            </Grid>
 
-                <ProgressBar Style="{StaticResource ProgressBarFlat}" x:Name="ProgBar" Value="0" Maximum="100" Margin="0,10" />
-
-                <!-- Log Console -->
-                <ListBox x:Name="LstLogs" Height="105" Style="{StaticResource ListBox.Small}">
-                    <ListBox.ItemContainerStyle>
-                        <Style TargetType="ListBoxItem">
-                            <Setter Property="Padding" Value="4,2"/>
-                            <Setter Property="Margin" Value="0"/>
-                        </Style>
-                    </ListBox.ItemContainerStyle>
-                </ListBox>
-            </StackPanel>
-        </StackPanel>
+            <!-- Log Console -->
+            <ListBox x:Name="LstLogs" Grid.Row="6" Height="170" Style="{StaticResource ListBox.Small}">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="4,2"/>
+                        <Setter Property="Margin" Value="0"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+            </ListBox>
+        </Grid>
 
         <!-- Bottom Action Bar -->
-        <Border Grid.Row="1" Padding="16,10" Background="{DynamicResource RegionBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
+        <Border Grid.Row="1" Padding="10" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -132,14 +140,13 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock x:Name="TxtSummary" Text="就绪。" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center"/>
+                    <CheckBox x:Name="ChkContextMenu" Content="添加到右键菜单" Margin="0,0,15,0" Cursor="Hand" Checked="ChkContextMenu_Checked" Unchecked="ChkContextMenu_Unchecked"/>
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button x:Name="BtnOpenFolder" Content="📁 打开目录" Style="{StaticResource ButtonDefault}" Padding="10,4" FontSize="11" Margin="0,0,8,0" Click="BtnOpenFolder_Click" />
-                    <Button x:Name="BtnCancel" Content="取消" Style="{StaticResource ButtonDanger}" Padding="14,4" FontSize="12" Margin="0,0,8,0" IsEnabled="False" Click="BtnCancel_Click" />
-                    <Button x:Name="BtnExtract" Content="📦 开始解压" Style="{StaticResource ButtonSuccess}" Padding="16,4" FontSize="12" Margin="0,0,8,0" Click="BtnExtract_Click" />
-                    <Button x:Name="BtnStart" Content="🚀 开始打包" Style="{StaticResource ButtonPrimary}" Padding="16,4" FontSize="12" Click="BtnStart_Click" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
+                    <Button x:Name="BtnCancel" Content="取消" Style="{StaticResource ButtonDanger}" Padding="14,4" FontSize="12" Margin="0,0,8,0" IsEnabled="False" Cursor="Hand" Click="BtnCancel_Click" />
+                    <hc:ProgressButton x:Name="BtnExtract" Content="📦 开始解压" Style="{StaticResource ProgressButtonSuccess}" Padding="16,4" FontSize="12" Margin="0,0,8,0" Cursor="Hand" Click="BtnExtract_Click" />
+                    <hc:ProgressButton x:Name="BtnStart" Content="🚀 开始打包" Style="{StaticResource ProgressButtonPrimary}" Padding="16,4" FontSize="12" Cursor="Hand" Click="BtnStart_Click" />
                 </StackPanel>
             </Grid>
         </Border>
