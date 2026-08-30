@@ -1,9 +1,21 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- ========================================== -->
+    <!-- 统一版本号定义：修改此处即可自动同步所有版本配置与输出文件名 -->
+    <!-- ========================================== -->
+    <Version>1.0.1.0</Version>
+    <FileVersion>$(Version)</FileVersion>
+    <AssemblyVersion>$(Version)</AssemblyVersion>
+    <InformationalVersion>$(Version)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    
+    <AssemblyTitle>漫画章节批量打包工具</AssemblyTitle>
+    <Description>漫画章节批量打包工具</Description>
+    <Product>ComicArchiver</Product>
+
     <OutputType>WinExe</OutputType>
     <TargetFramework>net48</TargetFramework>
     <UseWPF>true</UseWPF>
-    <UseWindowsForms>true</UseWindowsForms>
     <StartupObject>ComicArchiver.Program</StartupObject>
     <AssemblyName>ComicArchiver</AssemblyName>
     <RootNamespace>ComicArchiver</RootNamespace>
@@ -13,13 +25,11 @@
     <Optimize>true</Optimize>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
-
-    
     <ApplicationIcon>icons8_moleskine.ico</ApplicationIcon>
-
-    
     <PlatformTarget>AnyCPU</PlatformTarget>
+    <AutoGenerateBindingRedirects>False</AutoGenerateBindingRedirects>
   </PropertyGroup>
+
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <Prefer32Bit>True</Prefer32Bit>
     <DebugType>none</DebugType>
@@ -38,7 +48,6 @@
   <ItemGroup>
     <PackageReference Include="Costura.Fody" Version="6.2.0">
       <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="HandyControl" Version="3.5.1" />
     <PackageReference Include="Ookii.Dialogs.Wpf" Version="5.0.1" />
@@ -47,14 +56,17 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
-    <Reference Include="System.Data" />
-    <Reference Include="System.Drawing" />
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.IO.Compression.FileSystem" />
-    <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xaml" />
     <Reference Include="WindowsBase" />
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
   </ItemGroup>
+
+  <!-- 编译完成后仅保留带版本号的可执行文件 -->
+  <Target Name="GenerateVersionedOutputOnly" AfterTargets="Build">
+    <Move SourceFiles="$(TargetPath)" DestinationFiles="$(TargetDir)ComicArchiver v$(Version)$(TargetExt)" OverwriteReadOnlyFiles="true" />
+    <Move SourceFiles="$(TargetPath).config" DestinationFiles="$(TargetDir)ComicArchiver v$(Version)$(TargetExt).config" Condition="Exists('$(TargetPath).config')" OverwriteReadOnlyFiles="true" />
+  </Target>
 </Project>

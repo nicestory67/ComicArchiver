@@ -13,6 +13,7 @@
     
     <hc:Window.NonClientAreaContent>
         <Grid>
+            <TextBlock x:Name="TxtTitleVersion" Text="" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="5,0,0,0" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}" />
             <ToggleButton x:Name="ToggleThemeCommand"
                 IsChecked="True"
                 ToolTip="切换明亮/暗黑主题"
@@ -22,9 +23,7 @@
                 Style="{StaticResource ToggleButtonIconTransparent}"
                 hc:IconSwitchElement.Geometry="{StaticResource EyeOpenGeometry}"
                 hc:IconSwitchElement.GeometrySelected="{StaticResource EyeCloseGeometry}"
-                Click="ToggleThemeCommand_Click"
-                Checked="ToggleThemeCommand_Click"
-                Unchecked="ToggleThemeCommand_Click" />
+                Click="ToggleThemeCommand_Click" />
         </Grid>
     </hc:Window.NonClientAreaContent>
     <Grid>
@@ -47,7 +46,6 @@
 
             <!-- Mode & Path Card -->
 
-
             <Grid Grid.Row="0" Margin="0,0,0,10">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -56,16 +54,16 @@
                 </Grid.ColumnDefinitions>
                 <hc:TextBox x:Name="TxtTargetDir" Grid.Column="0" Margin="0,0,8,0" hc:InfoElement.Placeholder="请选择或拖拽目标文件夹..." hc:InfoElement.ShowClearButton="True" TextChanged="TxtTargetDir_TextChanged"/>
                 <Button x:Name="BtnBrowse" Grid.Column="1" Content="浏览..." Width="80" Margin="0,0,8,0" Cursor="Hand" Click="BtnBrowse_Click" />
-                <Button x:Name="BtnOpenFolder" Grid.Column="2" Content="📁 打开目录" Width="90" Cursor="Hand" Click="BtnOpenFolder_Click" />
+                <Button x:Name="BtnOpenFolder" Grid.Column="2" Content="📁 打开目录" Cursor="Hand" Click="BtnOpenFolder_Click" />
             </Grid>
-            
-            <Grid Grid.Row="1">
+
+            <Grid Grid.Row="1"> 
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                    <TextBlock x:Name="TxtDragHint" Grid.Column="0" Text="💡 提示：请拖入单个文件夹或点击 [浏览...] 选择" Style="{StaticResource TextBlockDefault}" HorizontalAlignment="Left" />
+                    <TextBlock x:Name="TxtDragHint" Text="💡 提示：请拖入单个文件夹或点击 [浏览...] 选择" Style="{StaticResource TextBlockDefault}" HorizontalAlignment="Left" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,10,0">
                     <hc:UniformSpacingPanel Spacing="10">
@@ -76,7 +74,7 @@
                 </StackPanel>
             </Grid>
 
-            <hc:Divider Grid.Row="2" Margin="0,10" />
+            <hc:Divider Grid.Row="2" Margin="0,5" Visibility="Hidden" />
             
             <!-- Options Card -->
             <Grid Grid.Row="3">
@@ -96,8 +94,9 @@
                         Width="300"
                         hc:InfoElement.ShowClearButton="True"
                         hc:InfoElement.TitlePlacement="Left"
-                        hc:InfoElement.Placeholder="额外包含文件 (分号分隔):"
-                        hc:InfoElement.Title="额外包含文件 (分号分隔):"
+                        hc:InfoElement.Placeholder="*.xml"
+                        hc:InfoElement.Title="额外包含文件："
+                        ToolTip="支持通配符，多个文件名用分号分隔"
                         Text="*.xml"/>
                 </StackPanel>
             </Grid>
@@ -110,14 +109,19 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="TxtStatus" Grid.Column="0" Text="准备就绪" HorizontalAlignment="Left" Style="{StaticResource TextBlockDefault}"/>
-                <hc:ComboBox x:Name="CmbLogLevelFilter" Grid.Column="1" Width="70" SelectedIndex="0" Cursor="Hand" SelectionChanged="CmbLogLevelFilter_SelectionChanged" Style="{StaticResource ComboBox.Small}">
-                    <ComboBoxItem Content="全部" />
-                    <ComboBoxItem Content="信息" />
-                    <ComboBoxItem Content="成功" />
-                    <ComboBoxItem Content="警告" />
-                    <ComboBoxItem Content="错误" />
-                </hc:ComboBox>
+                <TextBlock x:Name="TxtStatus" Grid.Column="0" Text="准备就绪" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,0,10,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" Style="{StaticResource TextBlockDefault}"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="线程:" VerticalAlignment="Center" Margin="0,0,5,0" Style="{StaticResource TextBlockDefault}"/>
+                    <hc:NumericUpDown x:Name="NumThreads" Minimum="1" Maximum="32" Value="10" Margin="0,0,10,0" Style="{StaticResource NumericUpDown.Small}" ToolTip="并发处理线程数 (1-32，默认 10)" ValueChanged="NumThreads_ValueChanged" Width="50" />
+                    <TextBlock Text="日志过滤:" VerticalAlignment="Center" Margin="0,0,5,0" Style="{StaticResource TextBlockDefault}"/>
+                    <hc:ComboBox x:Name="CmbLogLevelFilter" SelectedIndex="0" Cursor="Hand" ToolTip="日志过滤级别"  SelectionChanged="CmbLogLevelFilter_SelectionChanged" Style="{StaticResource ComboBox.Small}">
+                        <ComboBoxItem Content="全部" />
+                        <ComboBoxItem Content="信息" />
+                        <ComboBoxItem Content="成功" />
+                        <ComboBoxItem Content="警告" />
+                        <ComboBoxItem Content="错误" />
+                    </hc:ComboBox>
+                </StackPanel>
             </Grid>
 
             <!-- Log Console -->
@@ -132,7 +136,7 @@
         </Grid>
 
         <!-- Bottom Action Bar -->
-        <Border Grid.Row="1" Padding="10" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
+        <Border Grid.Row="1" Padding="10,0,10,10">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />

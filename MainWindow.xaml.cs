@@ -37,7 +37,6 @@ namespace ComicArchiver
         private AutoRunAction _autoRunAction = AutoRunAction.None;
 
         private bool _isAutoRun = false;
-        private string _autoRunTarget = null;
         private bool _isProcessing = false;
 
         /// <summary>
@@ -56,48 +55,90 @@ namespace ComicArchiver
             InitializeComponent();
             _archiverService = new ArchiverService();
 
-            // 读取内置配置并应用主题
+            // 在窗口标题栏呈现版本号（不影响任务栏的纯净名称）
+            var ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+            TxtTitleVersion.Text = $"v{ver.ToString(4)}";
+
+            // 读取内置配置并应用主题与线程数
             bool isDark = LoadThemeSetting();
             ToggleThemeCommand.IsChecked = isDark;
             ApplyTheme(isDark);
+            NumThreads.Value = LoadThreadSetting();
             _isThemeInitializing = false;
 
             // 解析参数进行自动运行配置
-            List<string> paths = new List<string>();
-            if (args != null && args.Length > 0)
+            ParseCommandLineArguments(args, out var initialPaths, out _isAutoRun, out _autoRunAction);
+
+            if (initialPaths.Count > 0)
             {
-                foreach (var arg in args)
-                {
-                    if (arg.StartsWith("/autorun:pack", StringComparison.OrdinalIgnoreCase) || 
-                        arg.StartsWith("/autorun:subfolders", StringComparison.OrdinalIgnoreCase) ||
-                        arg.StartsWith("/autorun:batch", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _isAutoRun = true;
-                        _autoRunAction = AutoRunAction.Pack;
-                    }
-                    else if (arg.StartsWith("/autorun:extract", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _isAutoRun = true;
-                        _autoRunAction = AutoRunAction.Extract;
-                    }
-                    else
-                    {
-                        paths.Add(arg);
-                    }
-                }
+                TxtTargetDir.Text = initialPaths[0];
             }
 
-            _ = SetTargetPathAsync(paths.ToArray());
+            _ = SetTargetPathAsync(initialPaths.ToArray());
 
-            if (_isAutoRun && paths.Count > 0)
+            if (_isAutoRun && initialPaths.Count > 0)
             {
-                _autoRunTarget = paths[0];
                 this.Loaded += MainWindow_Loaded;
             }
+
+            // 自动检查并清理旧版本注册表残留、废弃键位与临时文件
+            PerformLegacyCleanup();
 
             // 初始化检测右键菜单状态
             ChkContextMenu.IsChecked = CheckContextMenuStatus();
             _isContextMenuInitializing = false;
+        }
+
+        private void ParseCommandLineArguments(string[] args, out List<string> validPaths, out bool isAutoRun, out AutoRunAction action)
+        {
+            validPaths = new List<string>();
+            isAutoRun = false;
+            action = AutoRunAction.None;
+
+            if (args == null || args.Length == 0) return;
+
+            foreach (var rawArg in args)
+            {
+                if (string.IsNullOrWhiteSpace(rawArg)) continue;
+                string arg = rawArg.Trim();
+
+                // 容错处理：由于 Windows 命令行 \" 转义可能将 /autorun 拼接到路径末尾
+                if (arg.IndexOf("/autorun:pack", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    arg.IndexOf("/autorun:subfolders", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    arg.IndexOf("/autorun:batch", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    isAutoRun = true;
+                    action = AutoRunAction.Pack;
+
+                    int idx = arg.IndexOf("/autorun:", StringComparison.OrdinalIgnoreCase);
+                    string potentialPath = arg.Substring(0, idx).Trim('"', ' ', '\'');
+                    if (!string.IsNullOrEmpty(potentialPath))
+                    {
+                        validPaths.Add(potentialPath);
+                    }
+                    continue;
+                }
+
+                if (arg.IndexOf("/autorun:extract", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    isAutoRun = true;
+                    action = AutoRunAction.Extract;
+
+                    int idx = arg.IndexOf("/autorun:extract", StringComparison.OrdinalIgnoreCase);
+                    string potentialPath = arg.Substring(0, idx).Trim('"', ' ', '\'');
+                    if (!string.IsNullOrEmpty(potentialPath))
+                    {
+                        validPaths.Add(potentialPath);
+                    }
+                    continue;
+                }
+
+                string cleanPath = arg.Trim('"', '\'');
+                if (!string.IsNullOrEmpty(cleanPath))
+                {
+                    validPaths.Add(cleanPath);
+                }
+            }
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -106,12 +147,55 @@ namespace ComicArchiver
 
             if (_isAutoRun)
             {
+                if (_selectedPaths.Count > 0 && string.IsNullOrEmpty(TxtTargetDir.Text))
+                {
+                    TxtTargetDir.Text = _selectedPaths[0];
+                }
+
                 string actionName = _autoRunAction == AutoRunAction.Extract ? "解压" : "打包";
-                AddLog($"进入自动运行模式，即将开始{actionName}...", LogLevel.Info);
-                SetUiRunningState(true);
-                await Task.Delay(1000);
-                SetUiRunningState(false);
+                AddLog($"进入自动运行模式，目标: {TxtTargetDir.Text}，即将开始{actionName}...", LogLevel.Info);
+                await Task.Delay(500);
                 
+                if (_autoRunAction == AutoRunAction.Extract)
+                {
+                    BtnExtract_Click(null, null);
+                }
+                else
+                {
+                    BtnStart_Click(null, null);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 接收并处理由其他实例通过 IPC 转发过来的命令行参数。
+        /// </summary>
+        /// <param name="args">外部命令行参数数组</param>
+        public async void HandleExternalArgs(string[] args)
+        {
+            if (args == null || args.Length == 0) return;
+
+            if (_isProcessing)
+            {
+                AddLog("收到外部调用请求，但当前正在执行任务中，请等待任务完成后重试。", LogLevel.Warning);
+                return;
+            }
+
+            ParseCommandLineArguments(args, out var newPaths, out bool isAutoRun, out AutoRunAction action);
+
+            if (newPaths.Count > 0)
+            {
+                TxtTargetDir.Text = newPaths[0];
+                await SetTargetPathAsync(newPaths.ToArray());
+            }
+
+            if (isAutoRun && _selectedPaths.Count > 0)
+            {
+                _isAutoRun = true;
+                _autoRunAction = action;
+                string actionName = _autoRunAction == AutoRunAction.Extract ? "解压" : "打包";
+                AddLog($"收到外部自动运行指令，目标: {TxtTargetDir.Text}，即将开始{actionName}...", LogLevel.Info);
+
                 if (_autoRunAction == AutoRunAction.Extract)
                 {
                     BtnExtract_Click(null, null);
@@ -141,10 +225,17 @@ namespace ComicArchiver
 
             foreach (var p in paths)
             {
-                bool exists = await Task.Run(() => Directory.Exists(p) || File.Exists(p));
+                if (string.IsNullOrWhiteSpace(p)) continue;
+                string clean = p.Trim().Trim('"', '\'');
+                if (clean.Length > 3 && (clean.EndsWith("\\") || clean.EndsWith("/")))
+                {
+                    clean = clean.TrimEnd('\\', '/');
+                }
+
+                bool exists = await Task.Run(() => Directory.Exists(clean) || File.Exists(clean));
                 if (exists)
                 {
-                    validPaths.Add(p);
+                    validPaths.Add(clean);
                     break; // 仅支持单一文件夹目标
                 }
             }
@@ -154,8 +245,16 @@ namespace ComicArchiver
 
             if (_selectedPaths.Count == 0)
             {
-                TxtTargetDir.Text = string.Empty;
-                TxtDragHint.Text = "提示：请拖入文件夹或点击 [浏览...] 选择";
+                if (paths.Length > 0 && !string.IsNullOrWhiteSpace(paths[0]))
+                {
+                    TxtTargetDir.Text = paths[0].Trim('"', '\'');
+                    TxtDragHint.Text = "提示：目标路径可能不存在或无法访问";
+                }
+                else
+                {
+                    TxtTargetDir.Text = string.Empty;
+                    TxtDragHint.Text = "提示：请拖入文件夹或点击 [浏览...] 选择";
+                }
             }
             else
             {
@@ -171,8 +270,6 @@ namespace ComicArchiver
             }
             await Task.CompletedTask;
         }
-
-        // 已移除 Mode_Changed
 
         /// <summary>
         /// 当输入框内容被清空时，同步清理后台记录的待处理目录。
@@ -257,7 +354,8 @@ namespace ComicArchiver
                 TargetPaths = new List<string>(_selectedPaths),
                 ArchiveType = RbCbz.IsChecked == true ? "cbz" : "zip",
                 DeleteOriginalFolder = ChkDeleteOriginal.IsChecked == true,
-                AdditionalIncludePattern = TxtAdditionalInclude.Text?.Trim()
+                AdditionalIncludePattern = TxtAdditionalInclude.Text?.Trim(),
+                MaxDegreeOfParallelism = (int)NumThreads.Value
             };
 
             SetUiRunningState(true);
@@ -393,7 +491,8 @@ namespace ComicArchiver
                 TargetPaths = new List<string>(_selectedPaths),
                 ArchiveType = RbCbz.IsChecked == true ? "cbz" : "zip",
                 DeleteOriginalFolder = ChkDeleteOriginal.IsChecked == true,
-                AdditionalIncludePattern = TxtAdditionalInclude.Text?.Trim()
+                AdditionalIncludePattern = TxtAdditionalInclude.Text?.Trim(),
+                MaxDegreeOfParallelism = (int)NumThreads.Value
             };
 
             SetUiRunningState(true);
@@ -485,13 +584,15 @@ namespace ComicArchiver
             }
         }
 
-        private const string ContextMenuKey = @"Software\Classes\Directory\shell\ComicArchiver";
+        private const string ContextMenuDirKey = @"Software\Classes\Directory\shell\ComicArchiver";
+        private const string ContextMenuCbzKey = @"Software\Classes\SystemFileAssociations\.cbz\shell\ComicArchiver";
+        private const string ContextMenuZipKey = @"Software\Classes\SystemFileAssociations\.zip\shell\ComicArchiver";
 
         private bool CheckContextMenuStatus()
         {
             try
             {
-                using (var key = Registry.CurrentUser.OpenSubKey(ContextMenuKey))
+                using (var key = Registry.CurrentUser.OpenSubKey(ContextMenuDirKey))
                 {
                     return key != null;
                 }
@@ -502,6 +603,158 @@ namespace ComicArchiver
             }
         }
 
+        private void RegisterContextMenu(string exePath)
+        {
+            // 1. 注册文件夹右键菜单 (级联子菜单)
+            Registry.CurrentUser.DeleteSubKeyTree(ContextMenuDirKey, false);
+            using (var key = Registry.CurrentUser.CreateSubKey(ContextMenuDirKey))
+            {
+                key.SetValue("MUIVerb", "使用 ComicArchiver 处理");
+                key.SetValue("Icon", $"\"{exePath}\",0");
+                key.SetValue("SubCommands", "");
+
+                using (var subKey = key.CreateSubKey(@"shell\01_pack"))
+                {
+                    subKey.SetValue("MUIVerb", "智能打包 (自动扫描)");
+                    using (var cmdKey = subKey.CreateSubKey("command"))
+                    {
+                        cmdKey.SetValue("", $"\"{exePath}\" /autorun:pack \"%1\"");
+                    }
+                }
+
+                using (var subKey = key.CreateSubKey(@"shell\02_extract"))
+                {
+                    subKey.SetValue("MUIVerb", "一键解压 (向下递归)");
+                    subKey.SetValue("CommandFlags", 0x20, RegistryValueKind.DWord); // 0x20 = 分隔线 (前置)
+                    using (var cmdKey = subKey.CreateSubKey("command"))
+                    {
+                        cmdKey.SetValue("", $"\"{exePath}\" /autorun:extract \"%1\"");
+                    }
+                }
+            }
+
+            // 2. 注册 .cbz 文件右键菜单
+            Registry.CurrentUser.DeleteSubKeyTree(ContextMenuCbzKey, false);
+            using (var key = Registry.CurrentUser.CreateSubKey(ContextMenuCbzKey))
+            {
+                key.SetValue("", "使用 ComicArchiver 解压");
+                key.SetValue("Icon", $"\"{exePath}\",0");
+                using (var cmdKey = key.CreateSubKey("command"))
+                {
+                    cmdKey.SetValue("", $"\"{exePath}\" /autorun:extract \"%1\"");
+                }
+            }
+
+            // 3. 注册 .zip 文件右键菜单
+            Registry.CurrentUser.DeleteSubKeyTree(ContextMenuZipKey, false);
+            using (var key = Registry.CurrentUser.CreateSubKey(ContextMenuZipKey))
+            {
+                key.SetValue("", "使用 ComicArchiver 解压");
+                key.SetValue("Icon", $"\"{exePath}\",0");
+                using (var cmdKey = key.CreateSubKey("command"))
+                {
+                    cmdKey.SetValue("", $"\"{exePath}\" /autorun:extract \"%1\"");
+                }
+            }
+        }
+
+        private string GetRegisteredContextMenuExe()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey($@"{ContextMenuDirKey}\shell\01_pack\command"))
+                {
+                    if (key != null)
+                    {
+                        var val = key.GetValue("")?.ToString();
+                        if (!string.IsNullOrEmpty(val))
+                        {
+                            int firstQuote = val.IndexOf('"');
+                            int secondQuote = val.IndexOf('"', firstQuote + 1);
+                            if (firstQuote >= 0 && secondQuote > firstQuote)
+                            {
+                                return val.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// 自动检查并清理旧版程序的注册表残留、废弃键位、失效的右键菜单路径以及临时缓存文件。
+        /// </summary>
+        private void PerformLegacyCleanup()
+        {
+            try
+            {
+                string currentExePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                string currentVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.1.0";
+
+                // 1. 清理历史旧版遗留的废弃注册表项
+                string[] legacyKeys = new string[]
+                {
+                    @"Software\Classes\Directory\shell\ComicArchiver_Pack",
+                    @"Software\Classes\Directory\shell\ComicArchiver_Extract",
+                    @"Software\Classes\Directory\Background\shell\ComicArchiver",
+                    @"Software\Classes\Folder\shell\ComicArchiver",
+                    @"Software\Classes\*\shell\ComicArchiver",
+                    @"Software\Classes\*\shell\ComicArchiver_Pack",
+                    @"Software\Classes\*\shell\ComicArchiver_Extract"
+                };
+
+                foreach (var legacyKey in legacyKeys)
+                {
+                    try { Registry.CurrentUser.DeleteSubKeyTree(legacyKey, false); } catch { }
+                }
+
+                // 2. 检查当前右键菜单绑定，若指向已失效或旧版本路径，则自动无缝更新为当前版本路径
+                if (CheckContextMenuStatus())
+                {
+                    string registeredExe = GetRegisteredContextMenuExe();
+                    if (!string.IsNullOrEmpty(registeredExe) && !string.Equals(registeredExe, currentExePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        RegisterContextMenu(currentExePath);
+                    }
+                }
+
+                // 3. 记录最新版本号与当前 Exe 路径至注册表
+                using (var key = Registry.CurrentUser.CreateSubKey(ThemeSettingsKey))
+                {
+                    key.SetValue("Version", currentVersion);
+                    key.SetValue("LastExePath", currentExePath);
+                }
+
+                // 4. 异步清理 %TEMP% 目录下残留的历史临时文件夹
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        string tempDir = Path.GetTempPath();
+                        var tempDirs = Directory.GetDirectories(tempDir, "ComicArchiver*");
+                        foreach (var d in tempDirs)
+                        {
+                            try
+                            {
+                                if (Directory.GetLastWriteTime(d) < DateTime.Now.AddHours(-2))
+                                {
+                                    Directory.Delete(d, true);
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { }
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"执行旧版残留清理异常: {ex.Message}");
+            }
+        }
+
         private void ChkContextMenu_Checked(object sender, RoutedEventArgs e)
         {
             if (_isContextMenuInitializing) return;
@@ -509,35 +762,8 @@ namespace ComicArchiver
             try
             {
                 string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
-                
-                Registry.CurrentUser.DeleteSubKeyTree(ContextMenuKey, false);
-                using (var key = Registry.CurrentUser.CreateSubKey(ContextMenuKey))
-                {
-                    key.SetValue("MUIVerb", "使用 ComicArchiver 处理");
-                    key.SetValue("Icon", $"\"{exePath}\",0");
-                    key.SetValue("SubCommands", "");
-
-                    using (var subKey = key.CreateSubKey(@"shell\01_pack"))
-                    {
-                        subKey.SetValue("MUIVerb", "智能打包 (自动扫描)");
-                        using (var cmdKey = subKey.CreateSubKey("command"))
-                        {
-                            cmdKey.SetValue("", $"\"{exePath}\" \"%1\" /autorun:pack");
-                        }
-                    }
-
-                    using (var subKey = key.CreateSubKey(@"shell\02_extract"))
-                    {
-                        subKey.SetValue("MUIVerb", "一键解压 (向下递归)");
-                        subKey.SetValue("CommandFlags", 0x20, RegistryValueKind.DWord); // 0x20 = 分隔线 (前置)
-                        using (var cmdKey = subKey.CreateSubKey("command"))
-                        {
-                            cmdKey.SetValue("", $"\"{exePath}\" \"%1\" /autorun:extract");
-                        }
-                    }
-
-                }
-                AddLog("已成功添加到右键菜单。", LogLevel.Success);
+                RegisterContextMenu(exePath);
+                AddLog("已成功添加到文件夹与压缩包右键菜单。", LogLevel.Success);
             }
             catch (Exception ex)
             {
@@ -552,11 +778,13 @@ namespace ComicArchiver
 
             try
             {
-                Registry.CurrentUser.DeleteSubKeyTree(ContextMenuKey, false);
+                Registry.CurrentUser.DeleteSubKeyTree(ContextMenuDirKey, false);
+                Registry.CurrentUser.DeleteSubKeyTree(ContextMenuCbzKey, false);
+                Registry.CurrentUser.DeleteSubKeyTree(ContextMenuZipKey, false);
                 // Also clean up old invalid keys if they exist
                 Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\Directory\shell\ComicArchiver_Pack", false);
                 Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\Directory\shell\ComicArchiver_Extract", false);
-                AddLog("已移除右键菜单。", LogLevel.Info);
+                AddLog("已移除全部右键菜单注册。", LogLevel.Info);
             }
             catch (Exception ex)
             {
@@ -675,6 +903,7 @@ namespace ComicArchiver
             RbZip.IsEnabled = !isRunning;
             ChkDeleteOriginal.IsEnabled = !isRunning;
             TxtAdditionalInclude.IsEnabled = !isRunning;
+            NumThreads.IsEnabled = !isRunning;
 
             if (isRunning)
             {
@@ -749,6 +978,47 @@ namespace ComicArchiver
                 item.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
             }
         }
+        private void NumThreads_ValueChanged(object sender, HandyControl.Data.FunctionEventArgs<double> e)
+        {
+            if (_isThemeInitializing) return;
+            int val = (int)NumThreads.Value;
+            if (val < 1) val = 1;
+            if (val > 32) val = 32;
+            SaveThreadSetting(val);
+        }
+
+        private void SaveThreadSetting(int threads)
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.CreateSubKey(ThemeSettingsKey))
+                {
+                    key.SetValue("ThreadCount", threads, RegistryValueKind.DWord);
+                }
+            }
+            catch { }
+        }
+
+        private int LoadThreadSetting()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(ThemeSettingsKey))
+                {
+                    if (key != null)
+                    {
+                        var val = key.GetValue("ThreadCount");
+                        if (val != null && val is int i && i >= 1 && i <= 32)
+                        {
+                            return i;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return 10; // 默认 10 线程
+        }
+
         private void SaveThemeSetting(bool isDark)
         {
             try
