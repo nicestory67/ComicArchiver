@@ -149,8 +149,8 @@
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
                     <Button x:Name="BtnCancel" Content="取消" Style="{StaticResource ButtonDanger}" Padding="14,4" FontSize="12" Margin="0,0,8,0" IsEnabled="False" Cursor="Hand" Click="BtnCancel_Click" />
-                    <hc:ProgressButton x:Name="BtnExtract" Content="📦 开始解压" Style="{StaticResource ProgressButtonSuccess}" Padding="16,4" FontSize="12" Margin="0,0,8,0" Cursor="Hand" Click="BtnExtract_Click" />
-                    <hc:ProgressButton x:Name="BtnStart" Content="🚀 开始打包" Style="{StaticResource ProgressButtonPrimary}" Padding="16,4" FontSize="12" Cursor="Hand" Click="BtnStart_Click" />
+                    <hc:ProgressButton x:Name="BtnExtract" Content="📦 开始解压" Style="{StaticResource ProgressButtonSuccess}" BorderThickness="0" Padding="16,4" FontSize="12" Margin="0,0,8,0" Cursor="Hand" Click="BtnExtract_Click" />
+                    <hc:ProgressButton x:Name="BtnStart" Content="🚀 开始打包" Style="{StaticResource ProgressButtonPrimary}" BorderThickness="0" Padding="16,4" FontSize="12" Cursor="Hand" Click="BtnStart_Click" />
                 </StackPanel>
             </Grid>
         </Border>
